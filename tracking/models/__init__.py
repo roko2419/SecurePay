@@ -1,0 +1,1 @@
+from .trackinginfo import Shipment

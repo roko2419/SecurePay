@@ -1,0 +1,345 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>SecurePay — Shipments Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin:18px; color:#111; background:#f7f9fb }
+    .container { max-width:1100px; margin:0 auto }
+    h1,h2 { margin:8px 0 }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
+    input[type=text], select { padding:8px; border:1px solid #ccc; border-radius:6px }
+    button { padding:8px 10px; border-radius:6px; background:#0066cc; color:#fff; border:0; cursor:pointer }
+    button.ghost { background:#eee; color:#333 }
+    button.warn { background:#c0392b }
+    table { width:100%; border-collapse:collapse; margin-top:8px; background:#fff }
+    th, td { border:1px solid #eee; padding:8px; text-align:left; vertical-align:top }
+    th { background:#fafafa }
+    .muted { color:#666 }
+    .panel { border:1px solid #e6e9ed; padding:12px; border-radius:8px; background:#fff; margin-top:12px }
+    #log { white-space:pre-wrap; background:#fff; padding:8px; border:1px solid #eee; margin-top:8px; max-height:200px; overflow:auto }
+    .small { font-size:0.85rem }
+    .pill { display:inline-block; padding:4px 8px; border-radius:12px; background:#eef6ff; color:#036; font-weight:600; }
+    .empty { color:#888; padding:12px }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>SecurePay — Shipments Dashboard</h1>
+
+    <div class="panel">
+      <div class="row" style="align-items:center">
+        <label style="min-width:320px">Search shipments:
+          <input id="ship-search" type="text" placeholder="awb, courier, order id..." />
+        </label>
+
+        <label>Rows:
+          <select id="page-size">
+            <option>25</option><option>50</option><option>100</option>
+          </select>
+        </label>
+
+        <div style="margin-left:auto" class="muted small">Auto-refresh:
+          <input id="auto-refresh" type="checkbox" style="margin-left:6px" />
+        </div>
+
+        <button id="refresh-all" class="ghost">Refresh</button>
+      </div>
+      <div style="margin-top:8px" class="muted small">This dashboard will try common API paths; update the JS array if your endpoints use different prefixes.</div>
+    </div>
+
+    <div class="panel">
+      <h2>Shipments <span id="shipments-count" class="pill" style="margin-left:10px">—</span></h2>
+      <table id="shipments-table" aria-label="Shipments table">
+        <thead>
+          <tr>
+            <th>AWB</th><th>Order ID</th><th>Payment ID</th><th>Courier</th><th>Delivery Status</th><th>History (last entries)</th><th>Payment Status</th><th>Customer Name</th><th>Customer Phone</th><th>Track</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="shipments-pager" class="small muted" style="margin-top:8px"></div>
+    </div>
+
+    <div class="panel">
+      <h2>Log</h2>
+      <div id="log"></div>
+    </div>
+  </div>
+
+<script>
+/*
+  Shipments-only dashboard with Track button.
+  - Clicking Track will call detail endpoints for the AWB and update that row in-place.
+  - Update the arrays below to match your server routes.
+  - Use ?mock=true to test UI with sample data.
+*/
+
+function getCookie(name){
+  const v = `; ${document.cookie}`.split(`; ${name}=`);
+  return v.length===2 ? v.pop().split(';').shift() : null;
+}
+const csrftoken = getCookie('csrftoken');
+
+const el = id => document.getElementById(id);
+function log(msg){
+  const d = new Date().toISOString() + " - " + msg + "\n";
+  el('log').textContent = d + el('log').textContent;
+}
+function pretty(obj){ return JSON.stringify(obj, null, 2); }
+
+// list endpoints (tries these for listing)
+const shipmentListPaths = [
+  '/payments/v1/shipments',
+  '/v1/shipments',
+  '/payments/shipments',
+  '/tracking/shipments',
+  '/tracking/v1/shipments'
+];
+
+// detail endpoints tried for a specific AWB (order matters)
+const shipmentDetailPaths = [
+  '/tracking/track_shipment/shipsagar/',
+];
+
+// Generic helper to try multiple list endpoints
+async function tryList(paths, params = {}) {
+  const qs = new URLSearchParams(params).toString();
+  for (const base of paths) {
+    const url = base + (qs ? `?${qs}` : '');
+    try {
+      const res = await fetch(url, { method: 'GET', credentials: 'same-origin' });
+      if (res.ok) {
+        const json = await res.json();
+        return { url, json };
+      } else {
+        const txt = await res.text().catch(()=>null);
+        log(`Endpoint ${url} returned ${res.status} ${txt||''}`);
+      }
+    } catch (e) {
+      log(`Fetch error ${url}: ${e.message}`);
+    }
+  }
+  return null;
+}
+
+// Try to GET a single shipment detail by AWB using common detail paths
+async function fetchShipmentDetail(awb) {
+  const tried = [];
+  for (const base of shipmentDetailPaths) {
+    // form URL: base + awb + optional trailing slash
+    const candidates = [ base + encodeURIComponent(awb), base + encodeURIComponent(awb) + '/' ];
+    for (const url of candidates) {
+      try {
+        const res = await fetch(url, { method: 'GET', credentials: 'same-origin' });
+        tried.push({ url, status: res.status });
+        if (res.ok) {
+          const json = await res.json();
+          return { url, json };
+        } else {
+          const txt = await res.text().catch(()=>null);
+          log(`Detail ${url} returned ${res.status} ${txt||''}`);
+        }
+      } catch (e) {
+        log(`Detail fetch error ${url}: ${e.message}`);
+      }
+    }
+  }
+  return { tried };
+}
+
+// Render functions
+function renderShipments(rows) {
+  const tbody = document.querySelector('#shipments-table tbody');
+  const count = document.getElementById('shipments-count');
+
+  tbody.innerHTML = '';
+  count.textContent = rows ? rows.length : 0;
+
+  if (!rows || rows.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">No shipments found</td></tr>';
+    return;
+  }
+
+  rows.forEach((s) => {
+    // normalize field names (safe access)
+    const awb = s.awb || s.shipment_id__awb || s.awb_number || s.id || '';
+    const orderId = s.secureupi_order_id || s.pa_order_id || s.order_id || '';
+    const courier = s.courier || s.shipment_id__courier || '';
+    const status = s.status || s.shipment_id__status || s.order_status || '';
+    const customerName = (s.customer && s.customer.name) || s.customer_info__customer_name || s.customer_name || '';
+    const customerPhone = (s.customer && s.customer.phone) || s.customer_info__customer_phone || s.customer_phone || '';
+    const paymentId = s.payment_id || s.pa_payment_id || s.pa_payment || s.payment || '';
+
+    const histArr = s.history || s.shipment_history || [];
+    const histText = Array.isArray(histArr) ? histArr.slice(-5).map(h => (h.ts || h.time || '') + ' ' + (h.status || '') + (h.note ? ': ' + h.note : '')).join('\n') : '';
+
+    const tr = document.createElement('tr');
+
+    // create cells; last cell is Track button only if AWB present
+    tr.innerHTML = `
+      <td class="cell-awb">${awb}</td>
+      <td class="cell-order">${orderId}</td>
+      <td class="cell-payment">${paymentId}</td>
+      <td class="cell-courier">${courier}</td>
+      <td class="cell-status">${status}</td>
+      <td class="cell-history"><pre style="white-space:pre-wrap;max-height:120px;overflow:auto">${histText}</pre></td>
+      <td class="cell-payment-status">${s.order_status || ''}</td>
+      <td class="cell-customer-name">${customerName}</td>
+      <td class="cell-customer-phone">${customerPhone}</td>
+      <td class="cell-track"></td>
+    `;
+
+    tbody.appendChild(tr);
+
+    // If AWB exists, create Track button that checks current status and updates this row
+    if (awb) {
+      const btn = document.createElement('button');
+      btn.textContent = 'Track';
+      btn.style.background = '#007bff';
+      btn.style.cursor = 'pointer';
+      btn.onclick = async (ev) => {
+        btn.disabled = true;
+        btn.textContent = 'Checking...';
+        try {
+          const res = await fetchShipmentDetail(awb);
+          if (res && res.json) {
+            // Update this row with fresh values from the returned shipment object
+            updateRowFromShipmentData(tr, res.json);
+            log(`AWB ${awb} updated from ${res.url}`);
+          } else {
+            log(`Could not fetch detail for AWB ${awb}. Tried: ${JSON.stringify(res.tried || [])}`);
+            alert('Could not fetch details for AWB; see log for attempted URLs.');
+          }
+        } catch (e) {
+          log('Track button error: ' + e.message);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'Track';
+        }
+      };
+      tr.querySelector('.cell-track').appendChild(btn);
+    } else {
+      tr.querySelector('.cell-track').textContent = '-';
+    }
+  });
+}
+
+// Update a specific table row element using the shipment object returned by backend
+function updateRowFromShipmentData(tr, s) {
+  const awb = s.awb || s.shipment_id__awb || s.awb_number || s.id || '';
+  const orderId = s.secureupi_order_id || s.pa_order_id || s.order_id || '';
+  const courier = s.courier || s.shipment_id__courier || '';
+  const status = s.status || s.shipment_id__status || s.order_status || '';
+  const customerName = (s.customer && s.customer.name) || s.customer_info__customer_name || s.customer_name || '';
+  const customerPhone = (s.customer && s.customer.phone) || s.customer_info__customer_phone || s.customer_phone || '';
+  const paymentId = s.payment_id || s.pa_payment_id || s.payment || '';
+
+  const histArr = s.history || s.shipment_history || [];
+  const histText = Array.isArray(histArr) ? histArr.slice(-5).map(h => (h.ts || h.time || '') + ' ' + (h.status || '') + (h.note ? ': ' + h.note : '')).join('\n') : '';
+
+  // find and update cells in tr
+  const setCell = (cls, value) => {
+    const elc = tr.querySelector('.' + cls);
+    if (elc) elc.innerHTML = (cls === 'cell-history') ? `<pre style="white-space:pre-wrap;max-height:120px;overflow:auto">${value}</pre>` : (value || '');
+  };
+
+  setCell('cell-awb', awb);
+  setCell('cell-order', orderId);
+  setCell('cell-payment', paymentId);
+  setCell('cell-courier', courier);
+  setCell('cell-status', status);
+  setCell('cell-history', histText);
+  setCell('cell-payment-status', s.order_status || '');
+  setCell('cell-customer-name', customerName);
+  setCell('cell-customer-phone', customerPhone);
+}
+
+// Actions that change state (delivered/failed) — left intact to support existing buttons if used elsewhere
+async function markShipmentAction(awb, action) {
+  if (!confirm(`Mark ${awb} as ${action.toUpperCase()}?`)) return;
+  const possible = [
+    `/tracking/track_shipment/shipsagar/${encodeURIComponent(awb)}/${action}/`,
+    `/tracking/track_shipment/shipsagar/${encodeURIComponent(awb)}/${action}`
+  ];
+  let success = false;
+  for (const url of possible) {
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrftoken || '' },
+        body: JSON.stringify({})
+      });
+      if (res.ok) {
+        const j = await res.json();
+        log(`${action} succeeded at ${url}: ${JSON.stringify(j)}`);
+        success = true;
+        break;
+      } else {
+        const txt = await res.text().catch(()=>null);
+        log(`${action} at ${url} returned ${res.status}: ${txt||''}`);
+      }
+    } catch (e) {
+      log(`Error calling ${url}: ${e.message}`);
+    }
+  }
+  if (!success) alert('Action failed (see log).');
+  else loadAndRender();
+}
+
+// Load list and render table
+async function loadAndRender() {
+  const pageSize = Number(document.getElementById('page-size').value || 50);
+  const shipSearch = document.getElementById('ship-search').value.trim();
+
+  const shipParams = { limit: pageSize };
+  if (shipSearch) shipParams.q = shipSearch;
+  const shipRes = await tryList(shipmentListPaths, shipParams);
+  if (shipRes && shipRes.json) {
+    // support both array and paginated {results: []}
+    const rows = Array.isArray(shipRes.json) ? shipRes.json : (shipRes.json.results || shipRes.json.shipments || []);
+    renderShipments(rows);
+    log('Shipments loaded from ' + shipRes.url);
+  } else {
+    log('Shipment list endpoint not found or returned error');
+    document.querySelector('#shipments-table tbody').innerHTML = '<tr><td colspan="10" class="empty">No shipments endpoint found or returned error</td></tr>';
+    el('shipments-count').textContent = 0;
+  }
+}
+
+// UI wiring
+document.addEventListener('DOMContentLoaded', ()=>{
+  el('refresh-all').addEventListener('click', loadAndRender);
+  el('page-size').addEventListener('change', loadAndRender);
+  el('ship-search').addEventListener('keyup', (e)=>{ if (e.key === 'Enter') loadAndRender(); });
+  el('auto-refresh').addEventListener('change', (e)=> {
+    if (e.target.checked) {
+      window._dashAuto = setInterval(loadAndRender, 4000);
+    } else {
+      clearInterval(window._dashAuto);
+    }
+  });
+
+  // Support mock data for testing: add ?mock=true
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('mock') === 'true') {
+    const sampleShipments = [{
+      awb:'AWBMOCK1', secureupi_order_id:'suo_mock_1', courier:'DemoCourier', status:'IN_TRANSIT',
+      history:[{ts:'2026-08-10T10:05:00Z', status:'IN_TRANSIT', note:'Picked up'}], payment_id:'pay_m1', created_at:'2026-08-10T10:05:00Z', order_status:'PAID', customer:{name:'Alice', phone:'9999999999'}
+    }, {
+      awb:'AWBMOCK2', secureupi_order_id:'suo_mock_2', courier:'Speedy', status:'OUT_FOR_DELIVERY',
+      history:[{ts:'2026-08-10T11:00:00Z', status:'OUT_FOR_DELIVERY', note:'With courier'}], payment_id:'pay_m2', created_at:'2026-08-10T11:00:00Z', order_status:'HELD', customer:{name:'Bob', phone:'8888888888'}
+    }];
+    renderShipments(sampleShipments);
+    log('Mock data loaded (use ?mock=true)');
+    return;
+  }
+
+  // initial load
+  loadAndRender();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,456 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>SecurePay — Shipment Tracking & Control</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin:18px; color:#111 }
+    .container { max-width:980px; margin:0 auto }
+    h1,h2 { margin:8px 0 }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
+    label { display:flex; flex-direction:column; margin:8px 0; min-width:220px }
+    input[type=text] { padding:8px; border:1px solid #ccc; border-radius:6px }
+    button { padding:8px 10px; border-radius:6px; background:#0066cc; color:#fff; border:0; cursor:pointer }
+    button.warn { background:#c0392b }
+    button.ghost { background:#eee; color:#333 }
+    pre { background:#f6f6f6; padding:10px; border-radius:6px; overflow:auto }
+    #log { white-space:pre-wrap; background:#fafafa; padding:8px; border:1px solid #eee; margin-top:8px; max-height:240px; overflow:auto; }
+    .muted { color:#666 }
+    .controls { margin-top:12px; display:flex; gap:8px; align-items:center }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Shipment Tracking & Settlement</h1>
+
+    <section>
+      <h2>Enter order & AWB</h2>
+      <div class="row">
+          <label>SecureUPI Order ID
+              <input id="order-id" type="text" placeholder="e.g. order_abc123" />
+          </label>
+
+          <label>AWB (optional)
+              <input
+                  id="awb-input"
+                  type="text"
+                  placeholder="leave blank to auto-generate"
+              />
+          </label>
+
+          <label>Courier
+              <input id="courier-input" type="text" value="Delhivery" />
+          </label>
+
+          <div style="display:flex;flex-direction:column;gap:6px">
+              <button id="create-or-start">
+                  Create Shipment / Start Tracking
+              </button>
+
+              <button id="load-order" class="ghost">
+                  Load Order Info
+              </button>
+          </div>
+      </div>
+
+
+      <!-- BULK CSV -->
+      <div style="
+          margin-top:20px;
+          padding:16px;
+          border:1px solid #ddd;
+          border-radius:8px;
+      ">
+
+          <h3>Bulk Shipment Creation</h3>
+
+          <p class="muted">
+              Upload a CSV containing:
+              <b>secureupi_order_id, awb, courier</b>
+          </p>
+
+          <div class="row">
+
+              <label>
+                  CSV File
+                  <input
+                      id="bulk-csv"
+                      type="file"
+                      accept=".csv,text/csv"
+                  />
+              </label>
+
+              <div style="display:flex;align-items:end;height:70px">
+                  <button id="bulk-create">
+                      Create Bulk Shipments
+                  </button>
+              </div>
+
+          </div>
+
+          <div id="bulk-progress"
+              class="muted"
+              style="margin-top:10px">
+          </div>
+
+      </div>
+
+      <div class="muted" id="order-summary" style="margin-top:8px"></div>
+    </section>
+
+    <section style="margin-top:18px">
+      <h2>Tracking & Actions</h2>
+      <div class="controls">
+        <label style="margin:0">Track AWB:
+          <input id="track-awb" type="text" placeholder="AWB to track" />
+        </label>
+        <button id="start-track" class="ghost">Start Polling</button>
+        <button id="stop-track" class="ghost">Stop</button>
+
+        <div style="margin-left:auto; display:flex; gap:8px">
+          <button id="mark-delivered" style="background:#0a9a3a">Mark Delivered</button>
+          <button id="mark-failed" class="warn">Mark Failed (refund)</button>
+        </div>
+      </div>
+
+      <div style="margin-top:12px; display:grid; grid-template-columns:1fr 1fr; gap:12px">
+        <div>
+          <h4>Shipment</h4>
+          <pre id="shipment-json">{ }</pre>
+        </div>
+        <div>
+          <h4>Order</h4>
+          <pre id="order-json">{ }</pre>
+        </div>
+      </div>
+
+      <h4 style="margin-top:12px">Internal debug state</h4>
+      <pre id="internal-json">{ }</pre>
+
+      <h4 style="margin-top:12px">Log</h4>
+      <div id="log"></div>
+    </section>
+  </div>
+
+<script>
+/*
+  Tracking page behavior:
+  - POST /v1/shipments  => create shipment (payload: { secureupi_order_id, courier, awb? })
+  - GET  /v1/shipments/{awb} => fetch shipment status
+  - POST /v1/shipments/{awb}/delivered => mark delivered (triggers settlement)
+  - POST /v1/shipments/{awb}/failed => mark failed/refund (the backend must implement this)
+  - GET /v1/orders/{orderId} => fetch order status (optional)
+  - GET /__internal/state => debug info (optional)
+  Adjust endpoints if your app uses different paths.
+*/
+
+const logEl = document.getElementById('log');
+const appendLog = (s)=> logEl.textContent = (new Date()).toISOString() + " - " + s + "\n" + logEl.textContent;
+
+function getCookie(name){
+  const v = `; ${document.cookie}`.split(`; ${name}=`);
+  return v.length===2 ? v.pop().split(';').shift() : null;
+}
+const csrftoken = getCookie('csrftoken');
+
+let pollInterval = null;
+let currentAwb = null;
+
+document.getElementById('create-or-start').addEventListener('click', async ()=>{
+  const orderId = document.getElementById('order-id').value.trim();
+  if(!orderId){ alert('Enter SecureUPI order id'); return; }
+  const courier = document.getElementById('courier-input').value.trim() || 'DemoCourier';
+  const awb = document.getElementById('awb-input').value.trim() || undefined;
+  try {
+    appendLog('Creating shipment for order ' + orderId + ' awb=' + (awb||'(auto)'));
+    const res = await fetch('/tracking/create_shipment/', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type':'application/json', 'X-CSRFToken': csrftoken },
+      body: JSON.stringify({ secureupi_order_id: orderId, courier, awb })
+    });
+    const j = await res.json();
+    document.getElementById('shipment-json').textContent = JSON.stringify(j, null, 2);
+    appendLog('Create shipment response: ' + JSON.stringify(j));
+    if(res.ok && j.awb){
+      document.getElementById('track-awb').value = j.awb;
+      // start polling immediately
+      startPolling(j.awb);
+    }
+    // refresh order info
+    refreshOrder(orderId);
+    refreshInternal();
+  } catch (e) {
+    appendLog('create shipment failed: ' + e.message);
+    alert('create shipment failed: ' + e.message);
+  }
+});
+
+document.getElementById('load-order').addEventListener('click', async ()=>{
+  const orderId = document.getElementById('order-id').value.trim();
+  if(!orderId){ alert('Enter order id'); return; }
+  await refreshOrder(orderId);
+  refreshInternal();
+});
+
+// Polling controls
+document.getElementById('start-track').addEventListener('click', ()=>{
+  const awb = document.getElementById('track-awb').value.trim();
+  if(!awb){ alert('Enter AWB'); return; }
+  startPolling(awb);
+});
+document.getElementById('stop-track').addEventListener('click', stopPolling);
+
+// Mark delivered
+document.getElementById('mark-delivered').addEventListener('click', async ()=>{
+  const awb = document.getElementById('track-awb').value.trim(); if(!awb){ alert('Enter AWB'); return; }
+  if(!confirm('Mark shipment ' + awb + ' as DELIVERED? This will release payment to merchant.')) return;
+  try {
+    appendLog('Marking delivered for ' + awb);
+    const res = await fetch(`/tracking/track_shipment/${awb}/delivered`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-CSRFToken': csrftoken }
+    });
+    const j = await res.json();
+    document.getElementById('shipment-json').textContent = JSON.stringify(j, null, 2);
+    appendLog('Delivered response: ' + JSON.stringify(j));
+    // refresh related info
+    const orderId = document.getElementById('order-id').value.trim();
+    if(orderId) refreshOrder(orderId);
+    refreshInternal();
+    stopPolling();
+  } catch(e){
+    appendLog('mark delivered failed: ' + e.message);
+    alert('mark delivered failed: ' + e.message);
+  }
+});
+
+document.getElementById('bulk-create').addEventListener('click', async () => {
+
+    const fileInput = document.getElementById('bulk-csv');
+    const progress = document.getElementById('bulk-progress');
+
+    if (!fileInput.files || fileInput.files.length === 0) {
+        alert('Please select a CSV file');
+        return;
+    }
+
+    const file = fileInput.files[0];
+
+    if (!file.name.toLowerCase().endsWith('.csv')) {
+        alert('Please select a CSV file');
+        return;
+    }
+
+    const confirmed = confirm(
+        `Upload ${file.name} and create all shipments from it?`
+    );
+
+    if (!confirmed) {
+        return;
+    }
+
+    const formData = new FormData();
+
+    formData.append('file', file);
+
+    progress.textContent = 'Uploading CSV and creating shipments...';
+
+    appendLog(
+        `Starting bulk shipment creation: ${file.name}`
+    );
+
+    try {
+
+        const res = await fetch(
+            '/tracking/create_shipments_bulk/',
+            {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'X-CSRFToken': csrftoken || ''
+                },
+                body: formData
+            }
+        );
+
+        const data = await res.json();
+
+        console.log('Bulk response:', data);
+
+        if (!res.ok) {
+
+            progress.textContent =
+                `Bulk creation failed: ${data.error || res.status}`;
+
+            appendLog(
+                'Bulk creation failed: ' +
+                JSON.stringify(data)
+            );
+
+            alert(
+                data.error ||
+                'Bulk shipment creation failed'
+            );
+
+            return;
+        }
+
+        progress.textContent =
+            `Completed: ${data.success_count} succeeded, ` +
+            `${data.failed_count} failed`;
+
+        appendLog(
+            'Bulk shipment response: ' +
+            JSON.stringify(data)
+        );
+
+        // Show detailed result
+        if (data.results) {
+
+            data.results.forEach((item) => {
+
+                if (item.success) {
+
+                    appendLog(
+                        `SUCCESS: ${item.secureupi_order_id} ` +
+                        `AWB=${item.awb || ''}`
+                    );
+
+                } else {
+
+                    appendLog(
+                        `FAILED: ${item.secureupi_order_id} ` +
+                        `ERROR=${item.error}`
+                    );
+                }
+
+            });
+        }
+
+        alert(
+            `Bulk shipment creation completed.\n\n` +
+            `Success: ${data.success_count}\n` +
+            `Failed: ${data.failed_count}`
+        );
+
+        // Refresh internal state
+        refreshInternal();
+
+    } catch (e) {
+
+        progress.textContent =
+            'Bulk upload failed: ' + e.message;
+
+        appendLog(
+            'Bulk upload exception: ' + e.message
+        );
+
+        alert(
+            'Bulk upload failed: ' + e.message
+        );
+    }
+
+});
+
+// Mark failed / refund
+document.getElementById('mark-failed').addEventListener('click', async ()=>{
+  const awb = document.getElementById('track-awb').value.trim(); if(!awb){ alert('Enter AWB'); return; }
+  if(!confirm('Mark shipment ' + awb + ' as FAILED? This will refund the customer.')) return;
+  try {
+    appendLog('Marking failed for ' + awb);
+    const res = await fetch(`/tracking/track_shipment/${awb}/failed`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'X-CSRFToken': csrftoken }
+    });
+    const j = await res.json();
+    document.getElementById('shipment-json').textContent = JSON.stringify(j, null, 2);
+    appendLog('Failed response: ' + JSON.stringify(j));
+    const orderId = document.getElementById('order-id').value.trim();
+    if(orderId) refreshOrder(orderId);
+    refreshInternal();
+    stopPolling();
+  } catch(e){
+    appendLog('mark failed failed: ' + e.message);
+    alert('mark failed failed: ' + e.message);
+  }
+});
+
+async function startPolling(awb){
+  currentAwb = awb;
+  document.getElementById('track-awb').value = awb;
+  appendLog('Starting poll for AWB ' + awb);
+  if(pollInterval) clearInterval(pollInterval);
+  await pollOnce();
+  pollInterval = setInterval(pollOnce, 2000);
+}
+
+function stopPolling(){
+  if(pollInterval) clearInterval(pollInterval);
+  pollInterval = null;
+  appendLog('Stopped polling');
+}
+
+async function pollOnce(){
+  if(!currentAwb) return;
+  try {
+    const res = await fetch(`/tracking/track_shipment/${encodeURIComponent(currentAwb)}`);
+    if(!res.ok){ appendLog('Shipment fetch returned ' + res.status); document.getElementById('shipment-json').textContent = 'Not found'; return; }
+    const j = await res.json();
+    document.getElementById('shipment-json').textContent = JSON.stringify(j, null, 2);
+    appendLog('Shipment poll: ' + j.status);
+    // if delivered or failed stop polling automatically
+    if(j.status === 'DELIVERED' || j.status === 'FAILED'){ stopPolling(); }
+    // update order info based on mapping
+    const orderId = j.secureupi_order_id || document.getElementById('order-id').value.trim();
+    if(orderId) refreshOrder(orderId);
+  } catch(e){
+    appendLog('poll error: ' + e.message);
+  }
+}
+
+async function refreshOrder(orderId){
+  if(!orderId) return;
+  try {
+    const r = await fetch(`/v1/orders/${encodeURIComponent(orderId)}`);
+    if(!r.ok){ appendLog('Order fetch returned ' + r.status); document.getElementById('order-json').textContent = '{}'; return; }
+    const j = await r.json();
+    document.getElementById('order-json').textContent = JSON.stringify(j, null, 2);
+    // update summary
+    const sum = document.getElementById('order-summary');
+    sum.textContent = `Order ${j.secureupi_order_id || orderId} — Amount: ${j.amount || '-'} — Status: ${j.status || '-'}`;
+  } catch(e){
+    appendLog('refreshOrder error: ' + e.message);
+  }
+}
+
+async function refreshInternal(){
+  try {
+    const r = await fetch('/__internal/state');
+    if(!r.ok) return;
+    const j = await r.json();
+    document.getElementById('internal-json').textContent = JSON.stringify(j, null, 2);
+  } catch(e){
+    // ignore if endpoint not available
+  }
+}
+
+// on load, if last_payment exists in localStorage try to populate order id and start
+window.addEventListener('load', ()=>{
+  try {
+    const last = localStorage.getItem('last_payment') || localStorage.getItem('CURRENT_ORDER') || null;
+    if(last){
+      const o = JSON.parse(last);
+      if(o.secureupi_order_id) document.getElementById('order-id').value = o.secureupi_order_id;
+      if(o.payment_id) appendLog('Found last payment id: ' + o.payment_id);
+      refreshOrder(o.secureupi_order_id || o.order_id || '');
+      refreshInternal();
+    }
+  } catch(e){}
+});
+</script>
+</body>
+</html>

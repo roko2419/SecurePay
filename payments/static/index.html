@@ -1,0 +1,79 @@
+<button id="rzp-button1">Pay</button>
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+
+<script>
+async function createPaymentOnServer(amountRupees, receipt, customer){
+  // amountRupees: string or number (e.g., "500.00")
+  const payload = {
+    amount: amountRupees,
+    currency: "INR",
+    receipt: receipt,
+    customer: customer
+  };
+  const res = await fetch("create_payment/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    credentials: "same-origin"
+  });
+  console.log("create_payment response:", res);
+  if (!res.ok) throw new Error("create_payment failed: " + (await res.text()));
+  return await res.json();
+}
+
+async function verifyPaymentOnServer(order_id, payment_id, signature){
+  const res = await fetch("/payments/verify_payment/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      razorpay_order_id: order_id,
+      razorpay_payment_id: payment_id,
+      razorpay_signature: signature
+    }),
+    credentials: "same-origin"
+  });
+  return await res.json();
+}
+
+document.getElementById('rzp-button1').addEventListener('click', async function (e) {
+  e.preventDefault();
+  try {
+    // Example: gather amount and customer details from your page/checkout form
+    const amount = "500.00"; // rupees as string
+    const receipt = "receipt_" + Math.random().toString(36).slice(2,9);
+    const customer = { name: "Alice", email: "alice@example.com", contact: "9999999999" };
+
+    const data = await createPaymentOnServer(amount, receipt, customer);
+    // response contains key, order_id, amount (paise), currency, callback_url
+    const options = {
+      "key": data.key,
+      "amount": data.amount, // in paise (integer)
+      "currency": data.currency || "INR",
+      "name": "Your Store Name",
+      "description": "Purchase",
+      "order_id": data.order_id,
+      "handler": async function (response){
+        const v = await verifyPaymentOnServer(response.razorpay_order_id, response.razorpay_payment_id, response.razorpay_signature);
+        console.log("verify result:", v);
+        if (v.ok) {
+          alert("Payment verified & complete");
+          // redirect to success page or update UI
+        } else {
+          alert("Payment verification failed");
+        }
+      },
+      "prefill": {
+        "name": customer.name,
+        "email": customer.email,
+        "contact": customer.contact
+      },
+      "theme": { "color": "#3399cc" }
+    };
+    const rzp = new Razorpay(options);
+    rzp.open();
+  } catch (err) {
+    console.error(err);
+    alert("Payment init failed: " + err.message);
+  }
+});
+</script>

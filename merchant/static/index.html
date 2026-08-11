@@ -1,0 +1,334 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>SecurePay — Shop</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin: 18px; color:#111 }
+    h1,h2 { margin: 8px 0 }
+    .container { max-width: 980px; margin: 0 auto; }
+    .grid { display:flex; gap:12px; flex-wrap:wrap }
+    .card { border:1px solid #e0e0e0; padding:12px; border-radius:8px; width:220px; background:#fff }
+    .card img { width:100%; height:120px; object-fit:cover; border-radius:6px; }
+    button { background:#0066cc; color:#fff; border:0; padding:8px 10px; border-radius:6px; cursor:pointer }
+    button.secondary { background:#e6eefc; color:#003366 }
+    .muted { color:#666; font-size:0.95rem }
+    .row { display:flex; gap:8px; align-items:center }
+    .spacer { height:18px }
+    .field { display:block; margin:6px 0 }
+    input[type=text], input[type=tel], textarea { width:100%; padding:8px; border:1px solid #ccc; border-radius:6px }
+    table { width:100%; border-collapse:collapse; margin-top:8px }
+    td, th { padding:8px; border-bottom:1px solid #eee; text-align:left }
+    .right { text-align:right }
+    .hidden { display:none }
+    #msg { padding:8px; margin-top:8px; border-radius:6px }
+    #msg.ok { background:#e6ffef; color:#064 } 
+    #msg.err { background:#ffecec; color:#900 }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>SecurePay — Demo Store</h1>
+
+    <nav class="row" style="margin-bottom:12px">
+      <button id="nav-shop" class="secondary">Shop</button>
+      <button id="nav-checkout" class="secondary">Checkout</button>
+      <div style="margin-left:auto" id="cart-summary">Cart: 0 items — ₹0.00</div>
+    </nav>
+
+    <!-- Page: Shop -->
+    <section id="page-shop">
+      <h2>Products</h2>
+      <div class="grid" id="products"></div>
+      <div class="spacer"></div>
+      <button id="go-to-checkout">Continue to Payment</button>
+    </section>
+
+    <!-- Page: Checkout -->
+    <section id="page-checkout" class="hidden">
+      <h2>Checkout — Your order</h2>
+
+      <div id="cart-area"></div>
+
+      <h3>Shipping & Contact</h3>
+      <div>
+        <label class="field">Full name
+          <input id="ship-name" type="text" placeholder="Full name" />
+        </label>
+        <label class="field">Phone
+          <input id="ship-phone" type="tel" placeholder="9999999999" />
+        </label>
+        <label class="field">Address
+          <textarea id="ship-address" rows="3" placeholder="Street, city, state, pincode"></textarea>
+        </label>
+      </div>
+
+      <div style="margin-top:10px" class="row">
+        <button id="btn-pay">Pay</button>
+        <button id="btn-back" class="secondary">Back to shop</button>
+        <div style="margin-left:auto" id="checkout-total" class="muted"></div>
+      </div>
+
+      <div id="msg" class="hidden"></div>
+    </section>
+
+  </div>
+
+<script>
+/* Simple client-only store + checkout UI.
+   Expects a Django endpoint at POST /payments/create_payment/ that accepts JSON:
+     { amount: "123.45", currency: "INR", receipt: "...", customer: {...}, metadata: {...} }
+   and returns JSON containing at least { key, order_id, amount, currency } for real Razorpay flow.
+   The page also sends CSRF token (read from csrftoken cookie) for same-origin Django.
+*/
+
+const PRODUCTS = [
+  { id: "p1", name: "Gizmo Basic", price: 249.00, img: "" },
+  { id: "p2", name: "Widget Pro", price: 599.00, img: "" },
+  { id: "p3", name: "Thingamajig", price: 1299.00, img: "" },
+  { id: "p4", name: "Gadget Mini", price: 149.00, img: "" }
+];
+
+function fmt(v){ return Number(v).toFixed(2); }
+function getCookie(name) {
+  const v = `; ${document.cookie}`.split(`; ${name}=`);
+  return v.length===2 ? v.pop().split(';').shift() : null;
+}
+
+let CART = JSON.parse(localStorage.getItem('cart') || '[]'); // [{product_id, qty}]
+function saveCart(){ localStorage.setItem('cart', JSON.stringify(CART)); renderCartSummary(); }
+
+
+function addToCart(productId, qty=1){
+  const it = CART.find(x=>x.product_id === productId);
+  if(it) it.qty += qty; else CART.push({product_id: productId, qty});
+  saveCart();
+}
+
+function removeFromCart(productId){
+  CART = CART.filter(x=>x.product_id !== productId); saveCart();
+}
+
+function changeQty(productId, qty){
+  const it = CART.find(x=>x.product_id===productId);
+  if(!it) return;
+  it.qty = Math.max(0, qty);
+  if(it.qty===0) removeFromCart(productId); else saveCart();
+}
+
+function cartItemsDetailed(){
+  return CART.map(ci=>{
+    const p = PRODUCTS.find(pp=>pp.id===ci.product_id);
+    return { ...p, qty: ci.qty, line: Number(p.price) * ci.qty };
+  });
+}
+
+function cartTotal(){
+  return cartItemsDetailed().reduce((s,i)=>s + i.line, 0);
+}
+
+function renderProducts(){
+  const wrap = document.getElementById('products'); wrap.innerHTML = '';
+  PRODUCTS.forEach(p=>{
+    const card = document.createElement('div'); card.className='card';
+    const img = p.img ? `<img src="${p.img}" alt="">` : `<div style="height:120px;background:#f6f6f6;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999">Image</div>`;
+    card.innerHTML = `
+      ${img}
+      <h3 style="margin:8px 0">${p.name}</h3>
+      <div class="muted">₹${fmt(p.price)}</div>
+      <div style="margin-top:8px">
+        <input id="q-${p.id}" type="number" min="1" value="1" style="width:60px;padding:6px" />
+        <button data-id="${p.id}" style="margin-left:8px">Add</button>
+      </div>
+    `;
+    wrap.appendChild(card);
+    card.querySelector('button[data-id]').onclick = ()=>{
+      const q = parseInt(document.getElementById('q-'+p.id).value||'1',10);
+      addToCart(p.id, Math.max(1, q));
+      showMsg('Added to cart', 'ok');
+    };
+  });
+}
+
+function renderCartSummary(){
+  const el = document.getElementById('cart-summary');
+  const totalQty = CART.reduce((s,i)=>s+i.qty,0);
+  el.textContent = `Cart: ${totalQty} items — ₹${fmt(cartTotal())}`;
+  // also update checkout total if visible
+  const ct = document.getElementById('checkout-total');
+  if(ct) ct.textContent = `Total: ₹${fmt(cartTotal())}`;
+}
+
+function renderCheckoutCart(){
+  const zone = document.getElementById('cart-area');
+  const items = cartItemsDetailed();
+  if(items.length===0){
+    zone.innerHTML = '<i>Your cart is empty. Go to Shop to add products.</i>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Product</th><th>Qty</th><th class="right">Line</th></tr></thead><tbody>';
+  items.forEach(it=>{
+    html += `<tr>
+      <td>${it.name}</td>
+      <td><input type="number" min="0" value="${it.qty}" data-pid="${it.id}" style="width:68px;padding:4px" /></td>
+      <td class="right">₹${fmt(it.line)}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+  zone.innerHTML = html;
+
+  // wire qty inputs
+  zone.querySelectorAll('input[type=number][data-pid]').forEach(inp=>{
+    inp.addEventListener('change', e=>{
+      const pid = inp.getAttribute('data-pid');
+      const q = parseInt(inp.value||'0',10);
+      changeQty(pid, q);
+      renderCheckoutCart();
+    });
+  });
+
+  document.getElementById('checkout-total').textContent = `Total: ₹${fmt(cartTotal())}`;
+}
+
+/* Navigation */
+document.getElementById('nav-shop').onclick = ()=> showPage('shop');
+document.getElementById('nav-checkout').onclick = ()=> showPage('checkout');
+document.getElementById('go-to-checkout').onclick = ()=>{
+  if(CART.length===0){ showMsg('Cart empty — add items first', 'err'); return; }
+  showPage('checkout'); renderCheckoutCart();
+};
+document.getElementById('btn-back').onclick = ()=> { showPage('shop'); };
+
+/* Pay flow */
+document.getElementById('btn-pay').onclick = async ()=>{
+  if(CART.length===0){ showMsg('Cart empty', 'err'); return; }
+  const name = document.getElementById('ship-name').value.trim();
+  const phone = document.getElementById('ship-phone').value.trim();
+  const address = document.getElementById('ship-address').value.trim();
+  if(!name || !phone || !address){ showMsg('Please fill name, phone and address', 'err'); return; }
+
+  const payload = {
+    amount: fmt(cartTotal()),   // rupees string
+    currency: "INR",
+    receipt: "rcpt_"+Date.now(),
+    customer: { name, email: "", contact: phone },
+    metadata: { address }
+  };
+
+  showMsg('Initializing payment...', ''); disablePay(true);
+  try {
+    const res = await fetch('/payments/create_payment/', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    
+    if(!res.ok){
+      showMsg('Payment init failed: ' + JSON.stringify(data), 'err'); disablePay(false); return;
+    }
+    
+    // If server returned a mock flag, you may implement a mock flow; otherwise open Razorpay checkout:
+    if(data.mock){
+      showMsg('Mock payment created (dev). Simulating success...', 'ok');
+      // Call verify endpoint or simulate success — here we POST verify directly if provided:
+      if(data.order_id){
+        // For mock, call verify endpoint (server should accept and simulate)
+        const v = await fetch('/payments/verify_payment/', {
+          method:'POST', credentials:'same-origin',
+          headers:{ 'Content-Type':'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+          body: JSON.stringify({ razorpay_order_id: data.order_id, razorpay_payment_id: 'mock_pay_'+Date.now(), razorpay_signature: 'mock_signature' })
+        });
+        const vj = await v.json();
+        if(v.ok) showMsg('Payment (mock) verified: ' + JSON.stringify(vj), 'ok');
+        else showMsg('Verify failed: ' + JSON.stringify(vj), 'err');
+      }
+      disablePay(false);
+      return;
+    }
+
+    // Real flow: open Razorpay checkout (checkout script must be included server-side or via CDN)
+    if(data.key && data.order_id){
+      // prepare options for Razorpay checkout
+      const options = {
+        key: data.key,
+        amount: data.amount, // in paise / integer
+        currency: data.currency || "INR",
+        name: "SecurePay Demo",
+        description: "Order payment",
+        order_id: data.order_id,
+        prefill: { name, email: data.customer?.email || "", contact: phone },
+        handler: async function (resp) {
+          // resp: { razorpay_payment_id, razorpay_order_id, razorpay_signature }
+          showMsg('Verifying payment...', '');
+          const verify = await fetch('/payments/verify_payment/', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type':'application/json', 'X-CSRFToken': getCookie('csrftoken') },
+            body: JSON.stringify(resp)
+          });
+          const verifyJson = await verify.json();
+          if(verify.ok) {
+            showMsg('Payment successful: ' + JSON.stringify(verifyJson), 'ok');
+            // Clear cart on success
+            
+            console.log('Clearing cart...');
+            CART = []; saveCart(); renderCheckoutCart();
+          } else {
+            showMsg('Payment verification failed: ' + JSON.stringify(verifyJson), 'err');
+          }
+          disablePay(false);
+        },
+        modal: { escape: true }
+      };
+      // load checkout script if not present
+      if(typeof Razorpay === 'undefined'){
+        const s = document.createElement('script');
+        s.src = "https://checkout.razorpay.com/v1/checkout.js";
+        s.onload = ()=> new Razorpay(options).open();
+        s.onerror = ()=> { showMsg('Failed to load Razorpay script', 'err'); disablePay(false); };
+        document.body.appendChild(s);
+      } else {
+        new Razorpay(options).open();
+      }
+    } else {
+      showMsg('Invalid payment init response: ' + JSON.stringify(data), 'err');
+      disablePay(false);
+    }
+  } catch(err){
+    showMsg('Payment init failed: ' + err.message, 'err');
+    disablePay(false);
+  }
+};
+
+function disablePay(v){ document.getElementById('btn-pay').disabled = v; }
+
+/* Utility: show message */
+function showMsg(text, kind){
+  const el = document.getElementById('msg');
+  el.className = 'hidden';
+  el.textContent = '';
+  if(!text){ return; }
+  el.textContent = text;
+  el.className = kind === 'ok' ? 'ok' : (kind === 'err' ? 'err' : '');
+  el.classList.remove('hidden');
+}
+
+/* Navigation helper */
+function showPage(name){
+  document.getElementById('page-shop').classList.toggle('hidden', name!=='shop');
+  document.getElementById('page-checkout').classList.toggle('hidden', name!=='checkout');
+  if(name==='shop') renderProducts();
+  if(name==='checkout') renderCheckoutCart();
+}
+
+/* Init */
+renderProducts();
+renderCartSummary();
+showPage('shop');
+
+</script>
+</body>
+</html>

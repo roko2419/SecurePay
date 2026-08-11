@@ -1,0 +1,30 @@
+.track-btn {
+    padding: 6px 10px;
+    border-radius: 5px;
+    border: 0;
+    background: #0066cc;
+    color: white;
+    cursor: pointer;
+}
+
+.track-btn:disabled {
+    background: #ccc;
+    color: #777;
+    cursor: not-allowed;
+}
+
+.track-status {
+    font-weight: 500;
+}
+
+.track-status.tracking {
+    color: #0066cc;
+}
+
+.track-status.delivered {
+    color: #0a9a3a;
+}
+
+.track-status.failed {
+    color: #c0392b;
+}
