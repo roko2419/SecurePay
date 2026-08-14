@@ -251,7 +251,7 @@ class ShipmentListView(View):
             page = 1
         q = (request.GET.get('q') or '').strip().lower()
 
-        all_shipments = OrderInfo.objects.filter(merchant_id=7).values('pa_order_id', 'order_status', 'order_amount', 'order_currency', 'customer_info__customer_name', 'customer_info__customer_email', 'customer_info__customer_phone', 'shipment_id__awb', 'shipment_id__courier', 'shipment_id__status', 'pa_payment_id').order_by('-order_date')
+        all_shipments = OrderInfo.objects.filter(merchant_id=1).values('pa_order_id', 'order_status', 'order_amount', 'order_currency', 'customer_info__customer_name', 'customer_info__customer_email', 'customer_info__customer_phone', 'shipment_id__awb', 'shipment_id__courier', 'shipment_id__status', 'pa_payment_id').order_by('-order_date')
         # simple filtering by q (match awb, courier, or order id)
         if q:
             filtered = [s for s in all_shipments if q in (s.get('shipment_id__awb','') + s.get('shipment_id__courier','') + s.get('pa_order_id','')).lower()]
