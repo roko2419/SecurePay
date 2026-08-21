@@ -18,6 +18,9 @@
     #log { white-space:pre-wrap; background:#fafafa; padding:8px; border:1px solid #eee; margin-top:8px; max-height:240px; overflow:auto; }
     .muted { color:#666 }
     .controls { margin-top:12px; display:flex; gap:8px; align-items:center }
+    .bulk-wrap { margin-top:20px; padding:16px; border:1px solid #ddd; border-radius:8px; display:grid; grid-template-columns:1fr 1fr; gap:16px }
+    .bulk-col { border:1px dashed #e1e1e1; border-radius:8px; padding:12px }
+    .bulk-col h3 { margin-top:0 }
   </style>
 </head>
 <body>
@@ -27,72 +30,64 @@
     <section>
       <h2>Enter order & AWB</h2>
       <div class="row">
-          <label>SecureUPI Order ID
-              <input id="order-id" type="text" placeholder="e.g. order_abc123" />
-          </label>
+        <label>SecureUPI Order ID
+          <input id="order-id" type="text" placeholder="e.g. order_abc123" />
+        </label>
 
-          <label>AWB (optional)
-              <input
-                  id="awb-input"
-                  type="text"
-                  placeholder="leave blank to auto-generate"
-              />
-          </label>
+        <label>AWB (optional)
+          <input id="awb-input" type="text" placeholder="leave blank to auto-generate" />
+        </label>
 
-          <label>Courier
-              <input id="courier-input" type="text" value="Delhivery" />
-          </label>
+        <label>Courier
+          <input id="courier-input" type="text" value="Delhivery" />
+        </label>
 
-          <div style="display:flex;flex-direction:column;gap:6px">
-              <button id="create-or-start">
-                  Create Shipment / Start Tracking
-              </button>
-
-              <button id="load-order" class="ghost">
-                  Load Order Info
-              </button>
-          </div>
+        <div style="display:flex;flex-direction:column;gap:6px">
+          <button id="create-or-start">Create Shipment / Start Tracking</button>
+          <button id="load-order" class="ghost">Load Order Info</button>
+        </div>
       </div>
 
+      <!-- BULK CSV + PDF -->
+      <div class="bulk-wrap">
 
-      <!-- BULK CSV -->
-      <div style="
-          margin-top:20px;
-          padding:16px;
-          border:1px solid #ddd;
-          border-radius:8px;
-      ">
-
-          <h3>Bulk Shipment Creation</h3>
-
-          <p class="muted">
-              Upload a CSV containing:
-              <b>secureupi_order_id, awb, courier</b>
-          </p>
+        <!-- LEFT: CSV bulk creation -->
+        <div class="bulk-col">
+          <h3>Bulk Shipment Creation (CSV)</h3>
+          <p class="muted">Upload CSV with: <b>secureupi_order_id, awb, courier</b></p>
 
           <div class="row">
+            <label>
+              CSV File
+              <input id="bulk-csv" type="file" accept=".csv,text/csv" />
+            </label>
 
-              <label>
-                  CSV File
-                  <input
-                      id="bulk-csv"
-                      type="file"
-                      accept=".csv,text/csv"
-                  />
-              </label>
-
-              <div style="display:flex;align-items:end;height:70px">
-                  <button id="bulk-create">
-                      Create Bulk Shipments
-                  </button>
-              </div>
-
+            <div style="display:flex;align-items:end;height:70px">
+              <button id="bulk-create">Create Bulk Shipments</button>
+            </div>
           </div>
 
-          <div id="bulk-progress"
-              class="muted"
-              style="margin-top:10px">
+          <div id="bulk-progress" class="muted" style="margin-top:10px"></div>
+        </div>
+
+        <!-- RIGHT: PDF upload -->
+        <div class="bulk-col">
+          <h3>Upload Shipment PDF</h3>
+          <p class="muted">Upload a PDF document for shipment processing.</p>
+
+          <div class="row">
+            <label>
+              PDF File
+              <input id="bulk-pdf" type="file" accept="application/pdf,.pdf" />
+            </label>
+
+            <div style="display:flex;align-items:end;height:70px">
+              <button id="upload-pdf">Upload PDF</button>
+            </div>
           </div>
+
+          <div id="pdf-progress" class="muted" style="margin-top:10px"></div>
+        </div>
 
       </div>
 
@@ -134,17 +129,6 @@
   </div>
 
 <script>
-/*
-  Tracking page behavior:
-  - POST /v1/shipments  => create shipment (payload: { secureupi_order_id, courier, awb? })
-  - GET  /v1/shipments/{awb} => fetch shipment status
-  - POST /v1/shipments/{awb}/delivered => mark delivered (triggers settlement)
-  - POST /v1/shipments/{awb}/failed => mark failed/refund (the backend must implement this)
-  - GET /v1/orders/{orderId} => fetch order status (optional)
-  - GET /__internal/state => debug info (optional)
-  Adjust endpoints if your app uses different paths.
-*/
-
 const logEl = document.getElementById('log');
 const appendLog = (s)=> logEl.textContent = (new Date()).toISOString() + " - " + s + "\n" + logEl.textContent;
 
@@ -166,8 +150,8 @@ document.getElementById('create-or-start').addEventListener('click', async ()=>{
     appendLog('Creating shipment for order ' + orderId + ' awb=' + (awb||'(auto)'));
     const res = await fetch('/tracking/create_shipment/', {
       method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'Content-Type':'application/json', 'X-CSRFToken': csrftoken },
+      credentials: 'include',
+      headers: { 'Content-Type':'application/json', 'X-CSRFToken': csrftoken || '' },
       body: JSON.stringify({ secureupi_order_id: orderId, courier, awb })
     });
     const j = await res.json();
@@ -175,10 +159,8 @@ document.getElementById('create-or-start').addEventListener('click', async ()=>{
     appendLog('Create shipment response: ' + JSON.stringify(j));
     if(res.ok && j.awb){
       document.getElementById('track-awb').value = j.awb;
-      // start polling immediately
       startPolling(j.awb);
     }
-    // refresh order info
     refreshOrder(orderId);
     refreshInternal();
   } catch (e) {
@@ -194,7 +176,6 @@ document.getElementById('load-order').addEventListener('click', async ()=>{
   refreshInternal();
 });
 
-// Polling controls
 document.getElementById('start-track').addEventListener('click', ()=>{
   const awb = document.getElementById('track-awb').value.trim();
   if(!awb){ alert('Enter AWB'); return; }
@@ -202,7 +183,6 @@ document.getElementById('start-track').addEventListener('click', ()=>{
 });
 document.getElementById('stop-track').addEventListener('click', stopPolling);
 
-// Mark delivered
 document.getElementById('mark-delivered').addEventListener('click', async ()=>{
   const awb = document.getElementById('track-awb').value.trim(); if(!awb){ alert('Enter AWB'); return; }
   if(!confirm('Mark shipment ' + awb + ' as DELIVERED? This will release payment to merchant.')) return;
@@ -210,13 +190,12 @@ document.getElementById('mark-delivered').addEventListener('click', async ()=>{
     appendLog('Marking delivered for ' + awb);
     const res = await fetch(`/tracking/track_shipment/${awb}/delivered`, {
       method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'X-CSRFToken': csrftoken }
+      credentials: 'include',
+      headers: { 'X-CSRFToken': csrftoken || '' }
     });
     const j = await res.json();
     document.getElementById('shipment-json').textContent = JSON.stringify(j, null, 2);
     appendLog('Delivered response: ' + JSON.stringify(j));
-    // refresh related info
     const orderId = document.getElementById('order-id').value.trim();
     if(orderId) refreshOrder(orderId);
     refreshInternal();
@@ -227,135 +206,6 @@ document.getElementById('mark-delivered').addEventListener('click', async ()=>{
   }
 });
 
-document.getElementById('bulk-create').addEventListener('click', async () => {
-
-    const fileInput = document.getElementById('bulk-csv');
-    const progress = document.getElementById('bulk-progress');
-
-    if (!fileInput.files || fileInput.files.length === 0) {
-        alert('Please select a CSV file');
-        return;
-    }
-
-    const file = fileInput.files[0];
-
-    if (!file.name.toLowerCase().endsWith('.csv')) {
-        alert('Please select a CSV file');
-        return;
-    }
-
-    const confirmed = confirm(
-        `Upload ${file.name} and create all shipments from it?`
-    );
-
-    if (!confirmed) {
-        return;
-    }
-
-    const formData = new FormData();
-
-    formData.append('file', file);
-
-    progress.textContent = 'Uploading CSV and creating shipments...';
-
-    appendLog(
-        `Starting bulk shipment creation: ${file.name}`
-    );
-
-    try {
-
-        const res = await fetch(
-            '/tracking/create_shipments_bulk/',
-            {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: {
-                    'X-CSRFToken': csrftoken || ''
-                },
-                body: formData
-            }
-        );
-
-        const data = await res.json();
-
-        console.log('Bulk response:', data);
-
-        if (!res.ok) {
-
-            progress.textContent =
-                `Bulk creation failed: ${data.error || res.status}`;
-
-            appendLog(
-                'Bulk creation failed: ' +
-                JSON.stringify(data)
-            );
-
-            alert(
-                data.error ||
-                'Bulk shipment creation failed'
-            );
-
-            return;
-        }
-
-        progress.textContent =
-            `Completed: ${data.success_count} succeeded, ` +
-            `${data.failed_count} failed`;
-
-        appendLog(
-            'Bulk shipment response: ' +
-            JSON.stringify(data)
-        );
-
-        // Show detailed result
-        if (data.results) {
-
-            data.results.forEach((item) => {
-
-                if (item.success) {
-
-                    appendLog(
-                        `SUCCESS: ${item.secureupi_order_id} ` +
-                        `AWB=${item.awb || ''}`
-                    );
-
-                } else {
-
-                    appendLog(
-                        `FAILED: ${item.secureupi_order_id} ` +
-                        `ERROR=${item.error}`
-                    );
-                }
-
-            });
-        }
-
-        alert(
-            `Bulk shipment creation completed.\n\n` +
-            `Success: ${data.success_count}\n` +
-            `Failed: ${data.failed_count}`
-        );
-
-        // Refresh internal state
-        refreshInternal();
-
-    } catch (e) {
-
-        progress.textContent =
-            'Bulk upload failed: ' + e.message;
-
-        appendLog(
-            'Bulk upload exception: ' + e.message
-        );
-
-        alert(
-            'Bulk upload failed: ' + e.message
-        );
-    }
-
-});
-
-// Mark failed / refund
 document.getElementById('mark-failed').addEventListener('click', async ()=>{
   const awb = document.getElementById('track-awb').value.trim(); if(!awb){ alert('Enter AWB'); return; }
   if(!confirm('Mark shipment ' + awb + ' as FAILED? This will refund the customer.')) return;
@@ -363,8 +213,8 @@ document.getElementById('mark-failed').addEventListener('click', async ()=>{
     appendLog('Marking failed for ' + awb);
     const res = await fetch(`/tracking/track_shipment/${awb}/failed`, {
       method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'X-CSRFToken': csrftoken }
+      credentials: 'include',
+      headers: { 'X-CSRFToken': csrftoken || '' }
     });
     const j = await res.json();
     document.getElementById('shipment-json').textContent = JSON.stringify(j, null, 2);
@@ -376,6 +226,111 @@ document.getElementById('mark-failed').addEventListener('click', async ()=>{
   } catch(e){
     appendLog('mark failed failed: ' + e.message);
     alert('mark failed failed: ' + e.message);
+  }
+});
+
+/* CSV bulk create */
+document.getElementById('bulk-create').addEventListener('click', async () => {
+  const fileInput = document.getElementById('bulk-csv');
+  const progress = document.getElementById('bulk-progress');
+
+  if (!fileInput.files || fileInput.files.length === 0) { alert('Please select a CSV file'); return; }
+  const file = fileInput.files[0];
+  if (!file.name.toLowerCase().endsWith('.csv')) { alert('Please select a CSV file'); return; }
+
+  if (!confirm(`Upload ${file.name} and create all shipments from it?`)) return;
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  progress.textContent = 'Uploading CSV and creating shipments...';
+  appendLog(`Starting bulk shipment creation: ${file.name}`);
+
+  try {
+    const res = await fetch('/tracking/create_shipments_bulk/', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'X-CSRFToken': csrftoken || '' },
+      body: formData
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      progress.textContent = `Bulk creation failed: ${data.error || res.status}`;
+      appendLog('Bulk creation failed: ' + JSON.stringify(data));
+      alert(data.error || 'Bulk shipment creation failed');
+      return;
+    }
+
+    progress.textContent = `Completed: ${data.success_count} succeeded, ${data.failed_count} failed`;
+    appendLog('Bulk shipment response: ' + JSON.stringify(data));
+
+    if (data.results) {
+      data.results.forEach((item) => {
+        if (item.success) appendLog(`SUCCESS: ${item.secureupi_order_id} AWB=${item.awb || ''}`);
+        else appendLog(`FAILED: ${item.secureupi_order_id} ERROR=${item.error}`);
+      });
+    }
+
+    alert(`Bulk shipment creation completed.\n\nSuccess: ${data.success_count}\nFailed: ${data.failed_count}`);
+    refreshInternal();
+  } catch (e) {
+    progress.textContent = 'Bulk upload failed: ' + e.message;
+    appendLog('Bulk upload exception: ' + e.message);
+    alert('Bulk upload failed: ' + e.message);
+  }
+});
+
+/* PDF upload: /shipment/pdf/upload */
+document.getElementById('upload-pdf').addEventListener('click', async () => {
+  const fileInput = document.getElementById('bulk-pdf');
+  const progress = document.getElementById('pdf-progress');
+
+  if (!fileInput.files || fileInput.files.length === 0) { alert('Please select a PDF file'); return; }
+  const file = fileInput.files[0];
+
+  const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+  if (!isPdf) { alert('Only PDF files are allowed'); return; }
+
+  if (!confirm(`Upload PDF: ${file.name}?`)) return;
+
+  const formData = new FormData();
+  formData.append('file', file);
+
+  // optional order id context if backend wants it
+  const orderId = document.getElementById('order-id').value.trim();
+  if (orderId) formData.append('secureupi_order_id', orderId);
+
+  progress.textContent = 'Uploading PDF...';
+  appendLog(`Starting PDF upload: ${file.name}`);
+
+  try {
+    const res = await fetch('/tracking/pdf/upload', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'X-CSRFToken': csrftoken || '' },
+      body: formData
+    });
+
+    const ct = res.headers.get('content-type') || '';
+    const data = ct.includes('application/json') ? await res.json() : { raw: await res.text() };
+
+    if (!res.ok) {
+      progress.textContent = `PDF upload failed: ${data.error || res.status}`;
+      appendLog('PDF upload failed: ' + JSON.stringify(data));
+      alert(data.error || 'PDF upload failed');
+      return;
+    }
+
+    progress.textContent = 'PDF uploaded successfully.';
+    appendLog('PDF upload success: ' + JSON.stringify(data));
+    alert('PDF uploaded successfully.');
+    refreshInternal();
+  } catch (e) {
+    progress.textContent = 'PDF upload failed: ' + e.message;
+    appendLog('PDF upload exception: ' + e.message);
+    alert('PDF upload failed: ' + e.message);
   }
 });
 
@@ -397,14 +352,18 @@ function stopPolling(){
 async function pollOnce(){
   if(!currentAwb) return;
   try {
-    const res = await fetch(`/tracking/track_shipment/${encodeURIComponent(currentAwb)}`);
-    if(!res.ok){ appendLog('Shipment fetch returned ' + res.status); document.getElementById('shipment-json').textContent = 'Not found'; return; }
+    const res = await fetch(`/tracking/track_shipment/${encodeURIComponent(currentAwb)}`, { credentials: 'include' });
+    if(!res.ok){
+      appendLog('Shipment fetch returned ' + res.status);
+      document.getElementById('shipment-json').textContent = 'Not found';
+      return;
+    }
     const j = await res.json();
     document.getElementById('shipment-json').textContent = JSON.stringify(j, null, 2);
-    appendLog('Shipment poll: ' + j.status);
-    // if delivered or failed stop polling automatically
-    if(j.status === 'DELIVERED' || j.status === 'FAILED'){ stopPolling(); }
-    // update order info based on mapping
+    appendLog('Shipment poll: ' + (j.status || 'unknown'));
+
+    if(j.status === 'DELIVERED' || j.status === 'FAILED') stopPolling();
+
     const orderId = j.secureupi_order_id || document.getElementById('order-id').value.trim();
     if(orderId) refreshOrder(orderId);
   } catch(e){
@@ -415,13 +374,16 @@ async function pollOnce(){
 async function refreshOrder(orderId){
   if(!orderId) return;
   try {
-    const r = await fetch(`/v1/orders/${encodeURIComponent(orderId)}`);
-    if(!r.ok){ appendLog('Order fetch returned ' + r.status); document.getElementById('order-json').textContent = '{}'; return; }
+    const r = await fetch(`/v1/orders/${encodeURIComponent(orderId)}`, { credentials: 'include' });
+    if(!r.ok){
+      appendLog('Order fetch returned ' + r.status);
+      document.getElementById('order-json').textContent = '{}';
+      return;
+    }
     const j = await r.json();
     document.getElementById('order-json').textContent = JSON.stringify(j, null, 2);
-    // update summary
-    const sum = document.getElementById('order-summary');
-    sum.textContent = `Order ${j.secureupi_order_id || orderId} — Amount: ${j.amount || '-'} — Status: ${j.status || '-'}`;
+    document.getElementById('order-summary').textContent =
+      `Order ${j.secureupi_order_id || orderId} — Amount: ${j.amount || '-'} — Status: ${j.status || '-'}`;
   } catch(e){
     appendLog('refreshOrder error: ' + e.message);
   }
@@ -429,7 +391,7 @@ async function refreshOrder(orderId){
 
 async function refreshInternal(){
   try {
-    const r = await fetch('/__internal/state');
+    const r = await fetch('/__internal/state', { credentials: 'include' });
     if(!r.ok) return;
     const j = await r.json();
     document.getElementById('internal-json').textContent = JSON.stringify(j, null, 2);
@@ -438,7 +400,6 @@ async function refreshInternal(){
   }
 }
 
-// on load, if last_payment exists in localStorage try to populate order id and start
 window.addEventListener('load', ()=>{
   try {
     const last = localStorage.getItem('last_payment') || localStorage.getItem('CURRENT_ORDER') || null;

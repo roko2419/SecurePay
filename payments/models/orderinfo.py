@@ -12,3 +12,8 @@ class OrderInfo(models.Model):
     customer_info = models.ForeignKey('payments.CustomerInfo', on_delete=models.CASCADE)
     order_date = models.DateTimeField(auto_now_add=True)
     shipment_id = models.ForeignKey('tracking.Shipment', on_delete=models.SET_NULL, null=True, blank=True)
+    phonepe_order_id = models.CharField(max_length=128, blank=True, null=True)
+    phonepe_payment_id = models.CharField(max_length=128, blank=True, null=True)
+    phonepe_raw_response = models.JSONField(blank=True, null=True)  # Django 3.1+ has models.JSONField; otherwise use contrib.postgres.JSONField
+    payment_provider = models.CharField(max_length=32, blank=True, null=True)
+    enquiry = models.ForeignKey('payments.EnquiryData', on_delete=models.SET_NULL, null=True, blank=True)

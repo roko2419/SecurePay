@@ -1,79 +1,379 @@
-<button id="rzp-button1">Pay</button>
-<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>SecurePay — Demo Store</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    *{box-sizing:border-box}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:18px;background:#fafafa;color:#111}
+    .container{max-width:980px;margin:0 auto}
+    .row{display:flex;gap:8px;align-items:center}
+    .grid{display:flex;gap:12px;flex-wrap:wrap}
+    .card{border:1px solid #e0e0e0;padding:12px;border-radius:8px;width:220px;background:#fff}
+    .hidden{display:none!important}
+    button{background:#0066cc;color:#fff;border:0;padding:9px 12px;border-radius:6px;cursor:pointer}
+    button.secondary{background:#e6eefc;color:#003366}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .muted{color:#666}
+    input,textarea{width:100%;padding:9px;border:1px solid #ccc;border-radius:6px;font:inherit}
+    input[type=number]{width:68px}
+    table{width:100%;border-collapse:collapse;margin-top:8px;background:#fff}
+    td,th{padding:10px;border-bottom:1px solid #eee;text-align:left}
+    th{background:#f7f7f7}
+    .right{text-align:right}
+    .checkout-box{background:#fff;padding:16px;border:1px solid #e0e0e0;border-radius:8px}
+    #msg{padding:10px;margin-top:12px;border-radius:6px;white-space:pre-wrap;word-break:break-word}
+    .ok{background:#e6ffef;color:#064}
+    .err{background:#ffecec;color:#900}
+    .info{background:#eef5ff;color:#064a8a}
+
+    #payment-status-box{margin-top:16px;padding:14px;border:1px solid #dcdcdc;background:#f9f9f9;border-radius:8px}
+    #payment-status-box.success{border-color:#b7ebc6;background:#eafff0}
+    #payment-status-box.pending{border-color:#ffe08a;background:#fff9e8}
+    #payment-status-box.failed{border-color:#ffb3b3;background:#fff1f1}
+    .badge{display:inline-block;padding:3px 8px;border-radius:999px;font-size:12px;font-weight:600}
+    .badge.success{background:#d8f7e3;color:#0a6b2a}
+    .badge.pending{background:#fff1c7;color:#8a6400}
+    .badge.failed{background:#ffd9d9;color:#8a1111}
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>SecurePay — Demo Store</h1>
+
+  <nav class="row" style="margin-bottom:16px">
+    <button id="nav-shop" class="secondary">Shop</button>
+    <button id="nav-checkout" class="secondary">Checkout</button>
+    <div style="margin-left:auto" id="cart-summary">Cart: 0 items — ₹0.00</div>
+  </nav>
+
+  <section id="page-shop">
+    <h2>Products</h2>
+    <div class="grid" id="products"></div>
+    <div style="height:18px"></div>
+    <button id="go-to-checkout">Continue to Payment</button>
+  </section>
+
+  <section id="page-checkout" class="hidden">
+    <div class="checkout-box">
+      <h2>Checkout — Your Order</h2>
+      <div id="cart-area"></div>
+
+      <h3 style="margin-top:20px">Shipping & Contact</h3>
+      <label>Full Name<input id="ship-name" type="text" autocomplete="name" /></label><br>
+      <label>Phone<input id="ship-phone" type="tel" autocomplete="tel" /></label><br>
+      <label>Address<textarea id="ship-address" rows="3" autocomplete="street-address"></textarea></label>
+
+      <div class="row" style="margin-top:16px">
+        <button id="btn-pay">Pay with PhonePe</button>
+        <button id="btn-back" class="secondary">Back to Shop</button>
+        <div style="margin-left:auto" id="checkout-total" class="muted">Total: ₹0.00</div>
+      </div>
+
+      <div id="msg" class="hidden"></div>
+
+      <div id="payment-status-box" class="hidden">
+        <h3 id="payment-status-title" style="margin:0 0 8px">Payment Status</h3>
+        <div id="payment-status-details" class="muted"></div>
+      </div>
+    </div>
+  </section>
+</div>
 
 <script>
-async function createPaymentOnServer(amountRupees, receipt, customer){
-  // amountRupees: string or number (e.g., "500.00")
-  const payload = {
-    amount: amountRupees,
-    currency: "INR",
-    receipt: receipt,
-    customer: customer
-  };
-  const res = await fetch("create_payment/", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-    credentials: "same-origin"
-  });
-  console.log("create_payment response:", res);
-  if (!res.ok) throw new Error("create_payment failed: " + (await res.text()));
-  return await res.json();
+/* ------------------ DATA ------------------ */
+const PRODUCTS = [
+  { id:"p1", name:"Gizmo Basic", price:249 },
+  { id:"p2", name:"Widget Pro", price:599 },
+  { id:"p3", name:"Thingamajig", price:1299 },
+  { id:"p4", name:"Gadget Mini", price:149 }
+];
+let CART = JSON.parse(localStorage.getItem("cart") || "[]");
+
+/* ------------------ HELPERS ------------------ */
+const $ = id => document.getElementById(id);
+const fmt = v => Number(v).toFixed(2);
+
+function getCookie(name){
+  const value = `; ${document.cookie}`.split(`; ${name}=`);
+  if(value.length===2) return value.pop().split(";").shift();
+  return null;
 }
-
-async function verifyPaymentOnServer(order_id, payment_id, signature){
-  const res = await fetch("/payments/verify_payment/", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      razorpay_order_id: order_id,
-      razorpay_payment_id: payment_id,
-      razorpay_signature: signature
-    }),
-    credentials: "same-origin"
-  });
-  return await res.json();
+function getAuthToken(){
+  return getCookie("token") || localStorage.getItem("merchant_token") || "";
 }
-
-document.getElementById('rzp-button1').addEventListener('click', async function (e) {
-  e.preventDefault();
-  try {
-    // Example: gather amount and customer details from your page/checkout form
-    const amount = "500.00"; // rupees as string
-    const receipt = "receipt_" + Math.random().toString(36).slice(2,9);
-    const customer = { name: "Alice", email: "alice@example.com", contact: "9999999999" };
-
-    const data = await createPaymentOnServer(amount, receipt, customer);
-    // response contains key, order_id, amount (paise), currency, callback_url
-    const options = {
-      "key": data.key,
-      "amount": data.amount, // in paise (integer)
-      "currency": data.currency || "INR",
-      "name": "Your Store Name",
-      "description": "Purchase",
-      "order_id": data.order_id,
-      "handler": async function (response){
-        const v = await verifyPaymentOnServer(response.razorpay_order_id, response.razorpay_payment_id, response.razorpay_signature);
-        console.log("verify result:", v);
-        if (v.ok) {
-          alert("Payment verified & complete");
-          // redirect to success page or update UI
-        } else {
-          alert("Payment verification failed");
-        }
-      },
-      "prefill": {
-        "name": customer.name,
-        "email": customer.email,
-        "contact": customer.contact
-      },
-      "theme": { "color": "#3399cc" }
-    };
-    const rzp = new Razorpay(options);
-    rzp.open();
-  } catch (err) {
-    console.error(err);
-    alert("Payment init failed: " + err.message);
+function qp(...keys){
+  const q = new URLSearchParams(window.location.search);
+  for(const k of keys){
+    const v = q.get(k);
+    if(v) return v;
   }
-});
+  return "";
+}
+function showMsg(text,type="info"){
+  const el = $("msg");
+  el.className = "hidden";
+  el.textContent = "";
+  if(!text) return;
+  el.textContent = text;
+  el.className = (type==="ok" ? "ok" : type==="err" ? "err" : "info");
+}
+function disablePay(disabled){
+  const b = $("btn-pay");
+  b.disabled = disabled;
+  b.textContent = disabled ? "Processing..." : "Pay with PhonePe";
+}
+
+/* ------------------ CART ------------------ */
+function saveCart(){
+  localStorage.setItem("cart", JSON.stringify(CART));
+  renderCartSummary();
+}
+function addToCart(productId, qty=1){
+  const item = CART.find(x=>x.product_id===productId);
+  if(item) item.qty += qty;
+  else CART.push({product_id:productId, qty});
+  saveCart();
+}
+function cartItemsDetailed(){
+  return CART.map(c=>{
+    const p = PRODUCTS.find(x=>x.id===c.product_id);
+    if(!p) return null;
+    return {...p, qty:c.qty, line:p.price*c.qty};
+  }).filter(Boolean);
+}
+function cartTotal(){
+  return cartItemsDetailed().reduce((s,i)=>s+i.line,0);
+}
+
+/* ------------------ RENDER ------------------ */
+function renderProducts(){
+  const box = $("products");
+  box.innerHTML = "";
+  PRODUCTS.forEach(p=>{
+    const d = document.createElement("div");
+    d.className = "card";
+    d.innerHTML = `
+      <div style="height:120px;background:#f6f6f6;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#999">Image</div>
+      <h3>${p.name}</h3>
+      <div class="muted">₹${fmt(p.price)}</div>
+      <div style="margin-top:8px">
+        <input id="q-${p.id}" type="number" min="1" value="1" style="width:60px" />
+        <button data-id="${p.id}" style="margin-left:8px">Add</button>
+      </div>
+    `;
+    box.appendChild(d);
+    d.querySelector("button[data-id]").onclick = ()=>{
+      const q = parseInt($("q-"+p.id).value || "1",10);
+      addToCart(p.id, Math.max(1,q));
+      showMsg(`${p.name} added to cart.`, "ok");
+    };
+  });
+}
+
+function renderCartSummary(){
+  const count = CART.reduce((s,i)=>s+i.qty,0);
+  $("cart-summary").textContent = `Cart: ${count} items — ₹${fmt(cartTotal())}`;
+  $("checkout-total").textContent = `Total: ₹${fmt(cartTotal())}`;
+}
+
+function renderCheckoutCart(){
+  const area = $("cart-area");
+  const items = cartItemsDetailed();
+  if(!items.length){
+    area.innerHTML = "<i>Your cart is empty. Go to Shop to add products.</i>";
+    renderCartSummary();
+    return;
+  }
+
+  area.innerHTML = `
+    <table>
+      <thead><tr><th>Product</th><th>Qty</th><th class="right">Line</th></tr></thead>
+      <tbody>
+        ${items.map(i=>`
+          <tr>
+            <td>${i.name}</td>
+            <td><input type="number" min="0" value="${i.qty}" data-pid="${i.id}" /></td>
+            <td class="right">₹${fmt(i.line)}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  `;
+
+  area.querySelectorAll("input[data-pid]").forEach(inp=>{
+    inp.onchange = ()=>{
+      const pid = inp.dataset.pid;
+      const qty = Math.max(0, parseInt(inp.value || "0",10));
+      const c = CART.find(x=>x.product_id===pid);
+      if(c) c.qty = qty;
+      CART = CART.filter(x=>x.qty>0);
+      saveCart();
+      renderCheckoutCart();
+    };
+  });
+
+  renderCartSummary();
+}
+
+function showPage(page){
+  $("page-shop").classList.toggle("hidden", page!=="shop");
+  $("page-checkout").classList.toggle("hidden", page!=="checkout");
+  if(page==="shop") renderProducts();
+  if(page==="checkout") renderCheckoutCart();
+}
+
+/* ------------------ PAYMENT ------------------ */
+async function payNow(){
+  if(!CART.length) return showMsg("Cart is empty.", "err");
+
+  const name = $("ship-name").value.trim();
+  const phone = $("ship-phone").value.trim();
+  const address = $("ship-address").value.trim();
+  if(!name || !phone || !address){
+    return showMsg("Please fill name, phone and address.", "err");
+  }
+
+  const merchantOrderId = `SP_${Date.now()}_${Math.random().toString(36).slice(2,8)}`;
+  const amount = Math.round(cartTotal() * 100);
+
+  // Server return endpoint (server verifies then redirects to /merchants/store/?payment_status=...)
+  const redirectUrl = `${location.origin}/payments/phonepe/return/?merchantOrderId=${encodeURIComponent(merchantOrderId)}`;
+
+  const payload = {
+    merchantOrderId,
+    amount,
+    redirectUrl,
+    mobileNumber: phone,
+    customerName: name,
+    customerEmail: "",
+    metadata: { address, cart: CART }
+  };
+
+  showMsg("Initializing PhonePe payment...", "info");
+  disablePay(true);
+
+  try{
+    const authToken = getAuthToken();
+    const headers = {
+      "Content-Type":"application/json",
+      "X-CSRFToken":getCookie("csrftoken")
+    };
+    if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
+
+    const r = await fetch("/payments/phonepe/initiate/", {
+      method:"POST",
+      credentials:"include",
+      headers,
+      body: JSON.stringify(payload)
+    });
+
+    const ct = r.headers.get("content-type") || "";
+    const data = ct.includes("application/json") ? await r.json() : {error: await r.text()};
+
+    if(!r.ok){
+      showMsg("Payment initialization failed.\n" + (data.details || data.error || ""), "err");
+      disablePay(false);
+      return;
+    }
+
+    if(data.redirectUrl){
+      sessionStorage.setItem("sp_merchant_order_id", merchantOrderId);
+      if(data.orderId) sessionStorage.setItem("sp_phonepe_order_id", data.orderId);
+      sessionStorage.setItem("sp_amount_paise", String(amount)); // fallback amount for UI
+      location.href = data.redirectUrl;
+      return;
+    }
+
+    showMsg("PhonePe did not return redirectUrl.", "err");
+    disablePay(false);
+  }catch(e){
+    showMsg("Payment initialization failed.\n" + e.message, "err");
+    disablePay(false);
+  }
+}
+
+/* ------------------ RETURN STATUS UI ------------------ */
+function showReturnStatus(){
+  const rawStatus = (qp("payment_status","status","state") || "").toUpperCase();
+  if(!rawStatus) return;
+
+  showPage("checkout");
+
+  const merchantOrderId = qp("merchantOrderId") || sessionStorage.getItem("sp_merchant_order_id") || "-";
+  const orderId = qp("orderId") || sessionStorage.getItem("sp_phonepe_order_id") || "-";
+  const paymentId = qp("paymentId") || "-";
+
+  const amountPaiseQ = qp("amount");
+  const amountPaiseSession = sessionStorage.getItem("sp_amount_paise");
+  let amountText = "N/A";
+  if(amountPaiseQ && !isNaN(Number(amountPaiseQ)) && Number(amountPaiseQ)>0){
+    amountText = `₹${(Number(amountPaiseQ)/100).toFixed(2)}`;
+  }else if(amountPaiseSession && !isNaN(Number(amountPaiseSession)) && Number(amountPaiseSession)>0){
+    amountText = `₹${(Number(amountPaiseSession)/100).toFixed(2)}`;
+  }else{
+    amountText = `₹${fmt(cartTotal())}`;
+  }
+
+  const ok = ["SUCCESS","COMPLETED","PAID","SUCCESSFUL"].includes(rawStatus);
+  const pending = ["PENDING","IN_PROGRESS","PROCESSING"].includes(rawStatus);
+
+  const box = $("payment-status-box");
+  const title = $("payment-status-title");
+  const details = $("payment-status-details");
+
+  // reset classes
+  box.className = "hidden";
+  box.classList.remove("success","pending","failed");
+
+  if(ok){
+    box.classList.add("success");
+    title.textContent = "✅ Order Complete";
+    showMsg("Payment successful. Order complete.", "ok");
+
+    // clear cart only on success
+    CART = [];
+    saveCart();
+    renderCheckoutCart();
+  }else if(pending){
+    box.classList.add("pending");
+    title.textContent = "⏳ Payment Pending";
+    showMsg("Payment is pending. Please wait for confirmation.", "info");
+  }else{
+    box.classList.add("failed");
+    title.textContent = "❌ Payment Failed";
+    showMsg("Payment failed or cancelled.", "err");
+  }
+
+  const badgeClass = ok ? "success" : (pending ? "pending" : "failed");
+  details.innerHTML = `
+    <div><b>Status:</b> <span class="badge ${badgeClass}">${rawStatus}</span></div>
+    <div><b>Merchant Order ID:</b> ${merchantOrderId}</div>
+    <div><b>PhonePe Order ID:</b> ${orderId}</div>
+    <div><b>Payment ID:</b> ${paymentId}</div>
+    <div><b>Amount:</b> ${amountText}</div>
+    <div><b>Time:</b> ${new Date().toLocaleString()}</div>
+  `;
+
+  box.classList.remove("hidden");
+
+  // remove query params after display
+  history.replaceState({}, "", location.pathname);
+}
+
+/* ------------------ EVENTS ------------------ */
+$("nav-shop").onclick = ()=>showPage("shop");
+$("nav-checkout").onclick = ()=>showPage("checkout");
+$("go-to-checkout").onclick = ()=>CART.length ? showPage("checkout") : showMsg("Cart empty — add items first.", "err");
+$("btn-back").onclick = ()=>showPage("shop");
+$("btn-pay").onclick = payNow;
+
+/* ------------------ INIT ------------------ */
+renderProducts();
+renderCartSummary();
+showPage("shop");
+showReturnStatus();
 </script>
+</body>
+</html>

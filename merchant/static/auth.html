@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Merchant Auth</title>
+  <style>
+    body { font-family: Arial, sans-serif; background:#f6f7fb; margin:0; padding:24px; }
+    .wrap { max-width: 920px; margin: 0 auto; display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+    .card { background:#fff; border-radius:12px; padding:18px; box-shadow:0 6px 20px rgba(0,0,0,.08); }
+    h2 { margin-top:0; }
+    label { display:block; margin:10px 0 6px; font-size:14px; color:#333; }
+    input { width:100%; padding:10px; border:1px solid #d8dbe5; border-radius:8px; }
+    button { margin-top:14px; width:100%; border:0; padding:11px; border-radius:8px; background:#2f6fed; color:#fff; font-weight:600; cursor:pointer; }
+    button:hover { opacity:.95; }
+    pre { background:#0f172a; color:#d1fae5; padding:10px; border-radius:8px; min-height:88px; white-space:pre-wrap; word-break:break-word; }
+    .full { grid-column:1/-1; }
+    .muted { color:#666; font-size:12px; margin-top:8px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h2>Register</h2>
+      <form id="registerForm">
+        <label>Merchant Name</label>
+        <input name="merchant_name" required />
+
+        <label>Email</label>
+        <input name="merchant_email" type="email" required />
+
+        <label>Phone</label>
+        <input name="merchant_phone" required />
+
+        <label>Address</label>
+        <input name="merchant_address" required />
+
+        <label>Username</label>
+        <input name="merchant_username" required />
+
+        <label>Password</label>
+        <input name="merchant_password" type="password" required />
+
+        <button type="submit">Create Merchant</button>
+      </form>
+      <p class="muted">POST: <code>/api/create-merchant</code></p>
+    </div>
+
+    <div class="card">
+      <h2>Login</h2>
+      <form id="loginForm">
+        <label>Merchant Email</label>
+        <input name="merchant_email" type="email" required />
+
+        <label>Password</label>
+        <input name="password" type="password" required />
+
+        <button type="submit">Login</button>
+      </form>
+      <p class="muted">POST: <code>/api/login</code></p>
+    </div>
+
+    <div class="card full">
+      <h2>Response</h2>
+      <pre id="out">Waiting...</pre>
+    </div>
+  </div>
+
+  <script>
+    const out = document.getElementById("out");
+
+    function setAuthCookie(token, ttlSeconds) {
+      if (!token) return;
+      const maxAge = Number(ttlSeconds) > 0 ? Number(ttlSeconds) : 300;
+      document.cookie = `token=${encodeURIComponent(token)}; Path=/; Max-Age=${maxAge}; SameSite=Lax`;
+      localStorage.setItem("merchant_token", token);
+    }
+
+    async function postJSON(url, payload) {
+      const res = await fetch(url, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      let data;
+      try { data = await res.json(); } catch { data = { raw: await res.text() }; }
+      return { status: res.status, data };
+    }
+
+    document.getElementById("registerForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const payload = Object.fromEntries(fd.entries());
+
+      out.textContent = "Registering...";
+      try {
+        const r = await postJSON("/create_merchant/", payload);
+        out.textContent = JSON.stringify(r, null, 2);
+      } catch (err) {
+        out.textContent = "Error: " + err.message;
+      }
+    });
+
+    document.getElementById("loginForm").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const payload = Object.fromEntries(fd.entries());
+
+      out.textContent = "Logging in...";
+      try {
+        const r = await postJSON("/merchants/login/", payload);
+        if (r && r.status === 200 && r.data && r.data.token) {
+          setAuthCookie(r.data.token, r.data.expires_in);
+        }
+        out.textContent = JSON.stringify(r, null, 2);
+      } catch (err) {
+        out.textContent = "Error: " + err.message;
+      }
+    });
+  </script>
+</body>
+</html>

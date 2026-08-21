@@ -17,14 +17,24 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 from django.views.generic import TemplateView
-from securepay.api.v1.create_merchant import CreateMerchant
+from rest_framework.permissions import AllowAny
+from rest_framework.schemas import get_schema_view
+
+
+schema_view = get_schema_view(
+    title="SecurePay API",
+    description="Public OpenAPI schema for SecurePay endpoints.",
+    version="1.0.0",
+    public=True,
+    permission_classes=[AllowAny],
+)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path("", TemplateView.as_view(template_name="payments/static/index.html"), name="home"),
-    path('create_merchant/', CreateMerchant.as_view(), name='create_merchant'),
+    path("openapi.json", schema_view, name="openapi-schema"),
     # path('tracking/', include('tracking.urls')),
     path('payments/', include('payments.urls')),
     path('merchants/', include('merchant.urls')),
-    path('tracking/', include('tracking.urls')),
+    path('tracking/', include('tracking.urls')), 
 ]

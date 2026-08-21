@@ -6,22 +6,26 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
     body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; margin:18px; color:#111; background:#f7f9fb }
-    .container { max-width:1100px; margin:0 auto }
+    .container { max-width:1200px; margin:0 auto }
     h1,h2 { margin:8px 0 }
     .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap }
     input[type=text], select { padding:8px; border:1px solid #ccc; border-radius:6px }
     button { padding:8px 10px; border-radius:6px; background:#0066cc; color:#fff; border:0; cursor:pointer }
     button.ghost { background:#eee; color:#333 }
-    button.warn { background:#c0392b }
     table { width:100%; border-collapse:collapse; margin-top:8px; background:#fff }
-    th, td { border:1px solid #eee; padding:8px; text-align:left; vertical-align:top }
-    th { background:#fafafa }
+    th, td { border:1px solid #eee; padding:8px; text-align:left; vertical-align:top; font-size:13px }
+    th { background:#fafafa; position:sticky; top:0; z-index:1 }
     .muted { color:#666 }
     .panel { border:1px solid #e6e9ed; padding:12px; border-radius:8px; background:#fff; margin-top:12px }
-    #log { white-space:pre-wrap; background:#fff; padding:8px; border:1px solid #eee; margin-top:8px; max-height:200px; overflow:auto }
+    #log { white-space:pre-wrap; background:#fff; padding:8px; border:1px solid #eee; margin-top:8px; max-height:220px; overflow:auto }
     .small { font-size:0.85rem }
     .pill { display:inline-block; padding:4px 8px; border-radius:12px; background:#eef6ff; color:#036; font-weight:600; }
     .empty { color:#888; padding:12px }
+    .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; }
+    .paid { background:#e6ffef; color:#056a34; }
+    .pending { background:#fff6dd; color:#8a6500; }
+    .failed { background:#ffe8e8; color:#8b0000; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
   </style>
 </head>
 <body>
@@ -29,9 +33,9 @@
     <h1>SecurePay — Shipments Dashboard</h1>
 
     <div class="panel">
-      <div class="row" style="align-items:center">
+      <div class="row">
         <label style="min-width:320px">Search shipments:
-          <input id="ship-search" type="text" placeholder="awb, courier, order id..." />
+          <input id="ship-search" type="text" placeholder="awb, courier, order id, phonepe id..." />
         </label>
 
         <label>Rows:
@@ -46,19 +50,34 @@
 
         <button id="refresh-all" class="ghost">Refresh</button>
       </div>
-      <div style="margin-top:8px" class="muted small">This dashboard will try common API paths; update the JS array if your endpoints use different prefixes.</div>
+      <div style="margin-top:8px" class="muted small">
+        Dashboard now shows PhonePe IDs too. Make sure your shipment/order API returns these fields.
+      </div>
     </div>
 
     <div class="panel">
       <h2>Shipments <span id="shipments-count" class="pill" style="margin-left:10px">—</span></h2>
-      <table id="shipments-table" aria-label="Shipments table">
-        <thead>
-          <tr>
-            <th>AWB</th><th>Order ID</th><th>Payment ID</th><th>Courier</th><th>Delivery Status</th><th>History (last entries)</th><th>Payment Status</th><th>Customer Name</th><th>Customer Phone</th><th>Track</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+      <div style="overflow:auto; max-height:65vh;">
+        <table id="shipments-table" aria-label="Shipments table">
+          <thead>
+            <tr>
+              <th>AWB</th>
+              <th>Order ID</th>
+              <th>Payment Provider</th>
+              <th>PhonePe Order ID</th>
+              <th>PhonePe Payment ID</th>
+              <th>Payment Status</th>
+              <th>Amount</th>
+              <th>Courier</th>
+              <th>Delivery Status</th>
+              <th>Customer</th>
+              <th>History (last entries)</th>
+              <th>Track</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
       <div id="shipments-pager" class="small muted" style="margin-top:8px"></div>
     </div>
 
@@ -69,54 +88,53 @@
   </div>
 
 <script>
-/*
-  Shipments-only dashboard with Track button.
-  - Clicking Track will call detail endpoints for the AWB and update that row in-place.
-  - Update the arrays below to match your server routes.
-  - Use ?mock=true to test UI with sample data.
-*/
-
 function getCookie(name){
   const v = `; ${document.cookie}`.split(`; ${name}=`);
   return v.length===2 ? v.pop().split(';').shift() : null;
 }
 const csrftoken = getCookie('csrftoken');
-
 const el = id => document.getElementById(id);
+
 function log(msg){
   const d = new Date().toISOString() + " - " + msg + "\n";
   el('log').textContent = d + el('log').textContent;
 }
-function pretty(obj){ return JSON.stringify(obj, null, 2); }
+function money(v){
+  const n = Number(v);
+  if (Number.isNaN(n)) return "";
+  return "₹" + n.toFixed(2);
+}
+function badgeForStatus(s){
+  const x = (s || "").toUpperCase();
+  if (["PAID","SUCCESS","COMPLETED","SUCCESSFUL"].includes(x)) return `<span class="badge paid">${x}</span>`;
+  if (["PENDING","INITIATED","PROCESSING","IN_PROGRESS"].includes(x)) return `<span class="badge pending">${x}</span>`;
+  return `<span class="badge failed">${x || "-"}</span>`;
+}
 
-// list endpoints (tries these for listing)
+// List endpoints
 const shipmentListPaths = [
+  '/payments/v1/shipments/',
   '/payments/v1/shipments',
+  '/v1/shipments/',
   '/v1/shipments',
-  '/payments/shipments',
-  '/tracking/shipments',
-  '/tracking/v1/shipments'
+  '/tracking/shipments/',
+  '/tracking/shipments'
 ];
 
-// detail endpoints tried for a specific AWB (order matters)
+// Detail endpoints (AWB)
 const shipmentDetailPaths = [
   '/tracking/track_shipment/shipsagar/',
 ];
 
-// Generic helper to try multiple list endpoints
 async function tryList(paths, params = {}) {
   const qs = new URLSearchParams(params).toString();
   for (const base of paths) {
     const url = base + (qs ? `?${qs}` : '');
     try {
-      const res = await fetch(url, { method: 'GET', credentials: 'same-origin' });
-      if (res.ok) {
-        const json = await res.json();
-        return { url, json };
-      } else {
-        const txt = await res.text().catch(()=>null);
-        log(`Endpoint ${url} returned ${res.status} ${txt||''}`);
-      }
+      const res = await fetch(url, { method: 'GET', credentials: 'include' });
+      if (res.ok) return { url, json: await res.json() };
+      const txt = await res.text().catch(()=>null);
+      log(`Endpoint ${url} => ${res.status} ${txt || ""}`.slice(0, 400));
     } catch (e) {
       log(`Fetch error ${url}: ${e.message}`);
     }
@@ -124,23 +142,17 @@ async function tryList(paths, params = {}) {
   return null;
 }
 
-// Try to GET a single shipment detail by AWB using common detail paths
 async function fetchShipmentDetail(awb) {
   const tried = [];
   for (const base of shipmentDetailPaths) {
-    // form URL: base + awb + optional trailing slash
-    const candidates = [ base + encodeURIComponent(awb), base + encodeURIComponent(awb) + '/' ];
+    const candidates = [base + encodeURIComponent(awb), base + encodeURIComponent(awb) + '/'];
     for (const url of candidates) {
       try {
-        const res = await fetch(url, { method: 'GET', credentials: 'same-origin' });
-        tried.push({ url, status: res.status });
-        if (res.ok) {
-          const json = await res.json();
-          return { url, json };
-        } else {
-          const txt = await res.text().catch(()=>null);
-          log(`Detail ${url} returned ${res.status} ${txt||''}`);
-        }
+        const res = await fetch(url, { method:'GET', credentials:'include' });
+        tried.push({url, status: res.status});
+        if (res.ok) return { url, json: await res.json() };
+        const txt = await res.text().catch(()=>null);
+        log(`Detail ${url} => ${res.status} ${txt || ""}`.slice(0, 400));
       } catch (e) {
         log(`Detail fetch error ${url}: ${e.message}`);
       }
@@ -149,72 +161,93 @@ async function fetchShipmentDetail(awb) {
   return { tried };
 }
 
-// Render functions
-function renderShipments(rows) {
+/* Normalize record from mixed API keys */
+function normalizeShipment(s){
+  const awb = s.awb || s.shipment_id__awb || s.awb_number || s.id || "";
+  const orderId = s.secureupi_order_id || s.pa_order_id || s.order_id || s.merchant_order_id || "";
+  const courier = s.courier || s.shipment_id__courier || "";
+  const deliveryStatus = s.status || s.shipment_id__status || s.delivery_status || "";
+
+  // PhonePe / payment fields
+  const paymentProvider = s.payment_provider || s.order?.payment_provider || "-";
+  const phonepeOrderId = s.phonepe_order_id || s.order?.phonepe_order_id || s.pa_order_id || "";
+  const phonepePaymentId = s.phonepe_payment_id || s.order?.phonepe_payment_id || s.pa_payment_id || s.payment_id || "";
+  const paymentStatus = s.order_status || s.payment_status || s.order?.order_status || "";
+  const amount = s.order_amount || s.amount || s.order?.order_amount || "";
+
+  const customerName =
+    (s.customer && s.customer.name) ||
+    s.customer_info__customer_name ||
+    s.customer_name ||
+    (s.order && s.order.customer_name) ||
+    "";
+
+  const customerPhone =
+    (s.customer && s.customer.phone) ||
+    s.customer_info__customer_phone ||
+    s.customer_phone ||
+    (s.order && s.order.customer_phone) ||
+    "";
+
+  const history = s.history || s.shipment_history || [];
+  const histText = Array.isArray(history)
+    ? history.slice(-5).map(h => `${h.ts || h.time || ""} ${h.status || ""}${h.note ? " : " + h.note : ""}`).join("\n")
+    : "";
+
+  return {
+    awb, orderId, paymentProvider, phonepeOrderId, phonepePaymentId,
+    paymentStatus, amount, courier, deliveryStatus, customerName, customerPhone, histText
+  };
+}
+
+function renderShipments(rows){
   const tbody = document.querySelector('#shipments-table tbody');
-  const count = document.getElementById('shipments-count');
-
   tbody.innerHTML = '';
-  count.textContent = rows ? rows.length : 0;
+  el('shipments-count').textContent = rows?.length || 0;
 
-  if (!rows || rows.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="10" class="empty">No shipments found</td></tr>';
+  if (!rows || rows.length===0){
+    tbody.innerHTML = '<tr><td colspan="12" class="empty">No shipments found</td></tr>';
     return;
   }
 
-  rows.forEach((s) => {
-    // normalize field names (safe access)
-    const awb = s.awb || s.shipment_id__awb || s.awb_number || s.id || '';
-    const orderId = s.secureupi_order_id || s.pa_order_id || s.order_id || '';
-    const courier = s.courier || s.shipment_id__courier || '';
-    const status = s.status || s.shipment_id__status || s.order_status || '';
-    const customerName = (s.customer && s.customer.name) || s.customer_info__customer_name || s.customer_name || '';
-    const customerPhone = (s.customer && s.customer.phone) || s.customer_info__customer_phone || s.customer_phone || '';
-    const paymentId = s.payment_id || s.pa_payment_id || s.pa_payment || s.payment || '';
-
-    const histArr = s.history || s.shipment_history || [];
-    const histText = Array.isArray(histArr) ? histArr.slice(-5).map(h => (h.ts || h.time || '') + ' ' + (h.status || '') + (h.note ? ': ' + h.note : '')).join('\n') : '';
-
+  rows.forEach((raw)=>{
+    const s = normalizeShipment(raw);
     const tr = document.createElement('tr');
 
-    // create cells; last cell is Track button only if AWB present
     tr.innerHTML = `
-      <td class="cell-awb">${awb}</td>
-      <td class="cell-order">${orderId}</td>
-      <td class="cell-payment">${paymentId}</td>
-      <td class="cell-courier">${courier}</td>
-      <td class="cell-status">${status}</td>
-      <td class="cell-history"><pre style="white-space:pre-wrap;max-height:120px;overflow:auto">${histText}</pre></td>
-      <td class="cell-payment-status">${s.order_status || ''}</td>
-      <td class="cell-customer-name">${customerName}</td>
-      <td class="cell-customer-phone">${customerPhone}</td>
+      <td class="cell-awb mono">${s.awb || "-"}</td>
+      <td class="cell-order mono">${s.orderId || "-"}</td>
+      <td class="cell-provider">${s.paymentProvider || "-"}</td>
+      <td class="cell-pp-order mono">${s.phonepeOrderId || "-"}</td>
+      <td class="cell-pp-pay mono">${s.phonepePaymentId || "-"}</td>
+      <td class="cell-pay-status">${badgeForStatus(s.paymentStatus)}</td>
+      <td class="cell-amount">${s.amount !== "" ? money(s.amount) : "-"}</td>
+      <td class="cell-courier">${s.courier || "-"}</td>
+      <td class="cell-delivery">${s.deliveryStatus || "-"}</td>
+      <td class="cell-customer">${s.customerName || "-"}<br><span class="muted small">${s.customerPhone || ""}</span></td>
+      <td class="cell-history"><pre style="white-space:pre-wrap;max-height:120px;overflow:auto">${s.histText || ""}</pre></td>
       <td class="cell-track"></td>
     `;
-
     tbody.appendChild(tr);
 
-    // If AWB exists, create Track button that checks current status and updates this row
-    if (awb) {
+    if (s.awb){
       const btn = document.createElement('button');
       btn.textContent = 'Track';
-      btn.style.background = '#007bff';
-      btn.style.cursor = 'pointer';
-      btn.onclick = async (ev) => {
+      btn.onclick = async ()=>{
         btn.disabled = true;
         btn.textContent = 'Checking...';
-        try {
-          const res = await fetchShipmentDetail(awb);
-          if (res && res.json) {
-            // Update this row with fresh values from the returned shipment object
+        try{
+          const res = await fetchShipmentDetail(s.awb);
+          if (res && res.json){
             updateRowFromShipmentData(tr, res.json);
-            log(`AWB ${awb} updated from ${res.url}`);
-          } else {
-            log(`Could not fetch detail for AWB ${awb}. Tried: ${JSON.stringify(res.tried || [])}`);
-            alert('Could not fetch details for AWB; see log for attempted URLs.');
+            log(`AWB ${s.awb} refreshed from ${res.url}`);
+          }else{
+            log(`Track failed for ${s.awb}. Tried ${JSON.stringify(res.tried || [])}`);
+            alert("Could not fetch AWB details. See log.");
           }
-        } catch (e) {
-          log('Track button error: ' + e.message);
-        } finally {
+        }catch(e){
+          log(`Track error ${s.awb}: ${e.message}`);
+        }finally{
           btn.disabled = false;
           btn.textContent = 'Track';
         }
@@ -226,118 +259,68 @@ function renderShipments(rows) {
   });
 }
 
-// Update a specific table row element using the shipment object returned by backend
-function updateRowFromShipmentData(tr, s) {
-  const awb = s.awb || s.shipment_id__awb || s.awb_number || s.id || '';
-  const orderId = s.secureupi_order_id || s.pa_order_id || s.order_id || '';
-  const courier = s.courier || s.shipment_id__courier || '';
-  const status = s.status || s.shipment_id__status || s.order_status || '';
-  const customerName = (s.customer && s.customer.name) || s.customer_info__customer_name || s.customer_name || '';
-  const customerPhone = (s.customer && s.customer.phone) || s.customer_info__customer_phone || s.customer_phone || '';
-  const paymentId = s.payment_id || s.pa_payment_id || s.payment || '';
+function updateRowFromShipmentData(tr, raw){
+  const s = normalizeShipment(raw);
 
-  const histArr = s.history || s.shipment_history || [];
-  const histText = Array.isArray(histArr) ? histArr.slice(-5).map(h => (h.ts || h.time || '') + ' ' + (h.status || '') + (h.note ? ': ' + h.note : '')).join('\n') : '';
-
-  // find and update cells in tr
-  const setCell = (cls, value) => {
-    const elc = tr.querySelector('.' + cls);
-    if (elc) elc.innerHTML = (cls === 'cell-history') ? `<pre style="white-space:pre-wrap;max-height:120px;overflow:auto">${value}</pre>` : (value || '');
+  const set = (selector, html)=>{
+    const cell = tr.querySelector(selector);
+    if (cell) cell.innerHTML = html;
   };
 
-  setCell('cell-awb', awb);
-  setCell('cell-order', orderId);
-  setCell('cell-payment', paymentId);
-  setCell('cell-courier', courier);
-  setCell('cell-status', status);
-  setCell('cell-history', histText);
-  setCell('cell-payment-status', s.order_status || '');
-  setCell('cell-customer-name', customerName);
-  setCell('cell-customer-phone', customerPhone);
+  set('.cell-awb', `<span class="mono">${s.awb || "-"}</span>`);
+  set('.cell-order', `<span class="mono">${s.orderId || "-"}</span>`);
+  set('.cell-provider', s.paymentProvider || "-");
+  set('.cell-pp-order', `<span class="mono">${s.phonepeOrderId || "-"}</span>`);
+  set('.cell-pp-pay', `<span class="mono">${s.phonepePaymentId || "-"}</span>`);
+  set('.cell-pay-status', badgeForStatus(s.paymentStatus));
+  set('.cell-amount', s.amount !== "" ? money(s.amount) : "-");
+  set('.cell-courier', s.courier || "-");
+  set('.cell-delivery', s.deliveryStatus || "-");
+  set('.cell-customer', `${s.customerName || "-"}<br><span class="muted small">${s.customerPhone || ""}</span>`);
+  set('.cell-history', `<pre style="white-space:pre-wrap;max-height:120px;overflow:auto">${s.histText || ""}</pre>`);
 }
 
-// Actions that change state (delivered/failed) — left intact to support existing buttons if used elsewhere
-async function markShipmentAction(awb, action) {
-  if (!confirm(`Mark ${awb} as ${action.toUpperCase()}?`)) return;
-  const possible = [
-    `/tracking/track_shipment/shipsagar/${encodeURIComponent(awb)}/${action}/`,
-    `/tracking/track_shipment/shipsagar/${encodeURIComponent(awb)}/${action}`
-  ];
-  let success = false;
-  for (const url of possible) {
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrftoken || '' },
-        body: JSON.stringify({})
-      });
-      if (res.ok) {
-        const j = await res.json();
-        log(`${action} succeeded at ${url}: ${JSON.stringify(j)}`);
-        success = true;
-        break;
-      } else {
-        const txt = await res.text().catch(()=>null);
-        log(`${action} at ${url} returned ${res.status}: ${txt||''}`);
-      }
-    } catch (e) {
-      log(`Error calling ${url}: ${e.message}`);
-    }
-  }
-  if (!success) alert('Action failed (see log).');
-  else loadAndRender();
-}
+async function loadAndRender(){
+  const limit = Number(el('page-size').value || 25);
+  const q = el('ship-search').value.trim();
+  const params = { limit };
+  if (q) params.q = q;
 
-// Load list and render table
-async function loadAndRender() {
-  const pageSize = Number(document.getElementById('page-size').value || 50);
-  const shipSearch = document.getElementById('ship-search').value.trim();
-
-  const shipParams = { limit: pageSize };
-  if (shipSearch) shipParams.q = shipSearch;
-  const shipRes = await tryList(shipmentListPaths, shipParams);
-  if (shipRes && shipRes.json) {
-    // support both array and paginated {results: []}
-    const rows = Array.isArray(shipRes.json) ? shipRes.json : (shipRes.json.results || shipRes.json.shipments || []);
+  const res = await tryList(shipmentListPaths, params);
+  if (res && res.json){
+    const rows = Array.isArray(res.json) ? res.json : (res.json.results || res.json.shipments || []);
     renderShipments(rows);
-    log('Shipments loaded from ' + shipRes.url);
-  } else {
-    log('Shipment list endpoint not found or returned error');
-    document.querySelector('#shipments-table tbody').innerHTML = '<tr><td colspan="10" class="empty">No shipments endpoint found or returned error</td></tr>';
+    log(`Shipments loaded from ${res.url} (${rows.length} rows)`);
+  }else{
+    document.querySelector('#shipments-table tbody').innerHTML =
+      '<tr><td colspan="12" class="empty">No shipments endpoint found / error</td></tr>';
     el('shipments-count').textContent = 0;
+    log("Shipment list not available.");
   }
 }
 
-// UI wiring
 document.addEventListener('DOMContentLoaded', ()=>{
   el('refresh-all').addEventListener('click', loadAndRender);
   el('page-size').addEventListener('change', loadAndRender);
   el('ship-search').addEventListener('keyup', (e)=>{ if (e.key === 'Enter') loadAndRender(); });
-  el('auto-refresh').addEventListener('change', (e)=> {
-    if (e.target.checked) {
-      window._dashAuto = setInterval(loadAndRender, 4000);
-    } else {
-      clearInterval(window._dashAuto);
-    }
+  el('auto-refresh').addEventListener('change', (e)=>{
+    if (e.target.checked) window._auto = setInterval(loadAndRender, 4000);
+    else clearInterval(window._auto);
   });
 
-  // Support mock data for testing: add ?mock=true
-  const params = new URLSearchParams(window.location.search);
-  if (params.get('mock') === 'true') {
-    const sampleShipments = [{
-      awb:'AWBMOCK1', secureupi_order_id:'suo_mock_1', courier:'DemoCourier', status:'IN_TRANSIT',
-      history:[{ts:'2026-08-10T10:05:00Z', status:'IN_TRANSIT', note:'Picked up'}], payment_id:'pay_m1', created_at:'2026-08-10T10:05:00Z', order_status:'PAID', customer:{name:'Alice', phone:'9999999999'}
-    }, {
-      awb:'AWBMOCK2', secureupi_order_id:'suo_mock_2', courier:'Speedy', status:'OUT_FOR_DELIVERY',
-      history:[{ts:'2026-08-10T11:00:00Z', status:'OUT_FOR_DELIVERY', note:'With courier'}], payment_id:'pay_m2', created_at:'2026-08-10T11:00:00Z', order_status:'HELD', customer:{name:'Bob', phone:'8888888888'}
+  const params = new URLSearchParams(location.search);
+  if (params.get('mock') === 'true'){
+    const mock = [{
+      awb:'AWBMOCK1', merchant_order_id:'SP_DEMO_1', phonepe_order_id:'OMO_DEMO_1', phonepe_payment_id:'TXN_DEMO_1',
+      payment_provider:'phonepe', order_status:'paid', order_amount:'2544.00', courier:'DemoCourier',
+      status:'IN_TRANSIT', customer:{name:'Alice',phone:'9999999999'},
+      history:[{ts:'2026-08-12T10:00:00Z',status:'IN_TRANSIT',note:'Picked up'}]
     }];
-    renderShipments(sampleShipments);
-    log('Mock data loaded (use ?mock=true)');
+    renderShipments(mock);
+    log('Mock mode enabled.');
     return;
   }
 
-  // initial load
   loadAndRender();
 });
 </script>

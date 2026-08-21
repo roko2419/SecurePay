@@ -5,27 +5,44 @@ import requests
 import razorpay
 from rest_framework.views import APIView, Response, status
 
-from payments.auth import verify_merchant_auth_token
+from payments.auth import get_merchant_id_from_token
 from payments.models.orderinfo import OrderInfo
 from payments.models.customerinfo import CustomerInfo
+from payments.api.v1.phonepe import PhonePeInitiateView
 from payments.config import RAZORPAY_CREATE_ORDER_URL, RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET
 
 
 client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
+
+def _get_auth_token_from_request(request, payload=None):
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        return auth_header.split(" ", 1)[1].strip()
+
+    if payload and payload.get("auth_token"):
+        return payload.get("auth_token")
+
+    data = getattr(request, "data", None)
+    if data and data.get("auth_token"):
+        return data.get("auth_token")
+
+    return request.GET.get("auth_token")
+
 class GenerateOrder(APIView):
 
     def post(self, request):
-        self.merchant_id = request.data.get('id')
+        self.auth_token = _get_auth_token_from_request(request)
+        token_merchant_id = get_merchant_id_from_token(self.auth_token)
+        if token_merchant_id is None:
+            return Response({"error": "Invalid or expired merchant token"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        self.merchant_id = token_merchant_id
         self.merchant_order_id = request.data.get('merchant_order_id')
         self.customer_name = request.data.get('customer_name')
         self.customer_email = request.data.get('customer_email')
         self.customer_phone = request.data.get('customer_phone')
         self.amount = int(request.data.get('amount'))
-        self.auth_token = request.data.get('auth_token')
-
-        if not verify_merchant_auth_token(self.merchant_id, self.auth_token, self.merchant_order_id):
-            raise ValueError("Invalid merchant authentication token")
 
         self.generate_order()
         return self.create_pa_order()
@@ -50,6 +67,7 @@ class GenerateOrder(APIView):
         )
 
     def create_pa_order(self):
+        PhonePeInitiateView
         try:
             payload = {
                 "amount": self.amount * 100,  # Amount in paise
@@ -115,6 +133,12 @@ class CreatePayment(View):
             payload = json.loads(request.body.decode('utf-8'))
         except Exception:
             return HttpResponseBadRequest("invalid json")
+
+        self.auth_token = _get_auth_token_from_request(request, payload)
+        token_merchant_id = get_merchant_id_from_token(self.auth_token)
+        if token_merchant_id is None:
+            return JsonResponse({"error": "Invalid or expired merchant token"}, status=401)
+        self.merchant_id = token_merchant_id
 
         # Validate & compute amount in paise
         self.amount_str = str(payload.get("amount", "0")).strip()
@@ -183,7 +207,7 @@ class CreatePayment(View):
             customer_info.save()
 
         self.order_info = OrderInfo(
-            merchant_id=7,
+            merchant_id=self.merchant_id,
             merchant_order_id=self.mock_order_id,
             order_amount=self.amount_str,
             order_currency="INR",
@@ -238,8 +262,11 @@ class ShipmentListView(View):
         Accepts optional query params: limit (int), page (int), q (search string).
         Returns: { results: [...], page: 1, total_pages: 1 }
         """
-        # demo static data — replace with real DB query in production
-        
+        auth_token = _get_auth_token_from_request(request)
+        token_merchant_id = get_merchant_id_from_token(auth_token)
+        if token_merchant_id is None:
+            return JsonResponse({"error": "Invalid or expired merchant token"}, status=401)
+
         # read query params
         try:
             limit = int(request.GET.get('limit', 25))
@@ -251,7 +278,7 @@ class ShipmentListView(View):
             page = 1
         q = (request.GET.get('q') or '').strip().lower()
 
-        all_shipments = OrderInfo.objects.filter(merchant_id=1).values('pa_order_id', 'order_status', 'order_amount', 'order_currency', 'customer_info__customer_name', 'customer_info__customer_email', 'customer_info__customer_phone', 'shipment_id__awb', 'shipment_id__courier', 'shipment_id__status', 'pa_payment_id').order_by('-order_date')
+        all_shipments = OrderInfo.objects.filter(merchant_id=token_merchant_id).values('pa_order_id', 'order_status', 'order_amount', 'order_currency', 'customer_info__customer_name', 'customer_info__customer_email', 'customer_info__customer_phone', 'shipment_id__awb', 'shipment_id__courier', 'shipment_id__status', 'pa_payment_id').order_by('-order_date')
         # simple filtering by q (match awb, courier, or order id)
         if q:
             filtered = [s for s in all_shipments if q in (s.get('shipment_id__awb','') + s.get('shipment_id__courier','') + s.get('pa_order_id','')).lower()]

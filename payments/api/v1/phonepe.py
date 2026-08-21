@@ -14,11 +14,25 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from payments.api.v1.phonepe_auth import get_phonepe_oauth_token
+from payments.auth import get_merchant_id_from_token
 from payments.models.orderinfo import OrderInfo
 from payments.models.customerinfo import CustomerInfo
 from payments.models.merchantinfo import MerchantInfo
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_session_token(request):
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        return auth_header.split(" ", 1)[1].strip()
+
+    cookie_token = request.COOKIES.get("token") or request.COOKIES.get("auth_token")
+    if cookie_token:
+        return cookie_token
+
+    data = request.data or {}
+    return data.get("auth_token") or data.get("token") or request.headers.get("X-Auth-Token")
 
 
 def _map_phonepe_status_to_order_status(status_str: str) -> str:
@@ -133,14 +147,14 @@ class PhonePeInitiateView(APIView):
         if len(merchant_order_id) > 63:
             return Response({"ok": False, "error": "merchantOrderId must be <= 63 characters"}, status=status.HTTP_400_BAD_REQUEST)
 
-        # Merchant resolution (adjust if your auth flow is different)
-        merchant = None
-        if request.user and request.user.is_authenticated:
-            merchant = MerchantInfo.objects.filter(user=request.user).first()
+        token = _extract_session_token(request)
+        merchant_id = get_merchant_id_from_token(token)
+        if merchant_id is None:
+            return Response({"ok": False, "error": "Invalid or expired merchant token"}, status=status.HTTP_401_UNAUTHORIZED)
+
+        merchant = MerchantInfo.objects.filter(id=merchant_id).first()
         if merchant is None:
-            merchant = MerchantInfo.objects.first()
-        if merchant is None:
-            return Response({"ok": False, "error": "No merchant found"}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({"ok": False, "error": "No merchant found for token"}, status=status.HTTP_400_BAD_REQUEST)
 
         # Customer resolution
         if mobile:

@@ -8,4 +8,5 @@ class MerchantInfo(models.Model):
     merchant_email = models.EmailField(null=False, blank=False)
     merchant_phone = models.CharField(max_length=15, null=False, blank=False)
     merchant_address = models.TextField()
-    
+    # username = models.CharField(max_length=100, null=False, blank=False)
+    password = models.CharField(max_length=128, null=False, blank=False)
