@@ -36,6 +36,7 @@ POST /v1/orders
 ```json
 {
   "merchant_order_id": "ORD-2026-000123",
+  "merchant_id": 46,
   "amount": 149900,
   "currency": "INR",
   "customer": {
@@ -52,21 +53,9 @@ POST /v1/orders
     "pincode": "400067",
     "country": "IN"
   },
-  "items": [
-    {
-      "sku": "4434911842027",
-      "name": "Charcoal Carg - S",
-      "qty": 1,
-      "unit_price": 149900
-    }
-  ],
   "return_url": "https://merchant.com/checkout/return",
   "cancel_url": "https://merchant.com/checkout/cancel",
-  "webhook_url": "https://merchant.com/payments/webhook",
-  "metadata": {
-    "cart_id": "CART-8192",
-    "customer_id": "CUS-991"
-  }
+  "webhook_url": "https://merchant.com/payments/webhook"
 }
 ```
 
@@ -86,7 +75,7 @@ POST /v1/orders
 ```json
 {
   "order_id": "supi_ord_01K2XYZABC",
-  "merchant_id": "m_12345",
+  "merchant_id": "46",
   "merchant_order_id": "ORD-2026-000123",
   "status": "CREATED",
   "amount": 149900,
