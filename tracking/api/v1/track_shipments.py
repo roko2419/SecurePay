@@ -1,12 +1,37 @@
 import io
 import csv
 
+from django.conf import settings
 from django.http import JsonResponse
 from django.views import View
 from tracking.models.trackinginfo import Shipment
+from tracking.signing import build_enquiry_link
+from tracking.api.v1.notifs import send_whatsapp_text
 from payments.models import OrderInfo
 import json
+import logging
 import requests
+
+logger = logging.getLogger(__name__)
+
+
+def notify_customer_delivered(pa_order_id):
+    """Send the customer a WhatsApp message with their signed order-enquiry link."""
+    order_info = OrderInfo.objects.filter(pa_order_id=pa_order_id).select_related("customer_info").first()
+    if not order_info or not order_info.customer_info or not order_info.customer_info.customer_phone:
+        logger.warning("Skipping delivery notification: no customer phone for order %s", pa_order_id)
+        return
+
+    link = build_enquiry_link(settings.FRONTEND_ENQUIRY_URL, pa_order_id)
+    message = (
+        f"Your order {pa_order_id} has been marked as delivered. "
+        f"If there's an issue with your order, let us know here: {link}"
+    )
+
+    try:
+        send_whatsapp_text(order_info.customer_info.customer_phone, message, preview_url=True)
+    except Exception:
+        logger.exception("Failed to send delivery WhatsApp notification for order %s", pa_order_id)
 
 
 class CreateShipment(View):
@@ -115,6 +140,8 @@ class UpdateShipment(View):
             return JsonResponse({"ok": False, "error": "Shipment not found"}, status=404)
         except Exception as e:
             return JsonResponse({"ok": False, "error": str(e)}, status=500)
+
+        notify_customer_delivered(shipment.pa_order_id)
 
         return JsonResponse({"ok": True, "awb": awb, "status": "DELIVERED"})
 
@@ -380,8 +407,12 @@ class TrackShipmentShipsagar(View):
                 json.loads(response_data["trackingDetails"])
             )
             status = tracking_details.get("CurrentStatus", "")
+            was_delivered = shipment.status.strip().lower() == "delivered"
             shipment.status = status
             shipment.save()
+
+            if status.strip().lower() == "delivered" and not was_delivered:
+                notify_customer_delivered(shipment.pa_order_id)
             return JsonResponse(status=200, data={
                 "awb": shipment.awb,
                 "secureupi_order_id": getattr(shipment, "pa_order_id", None) or getattr(shipment, "secureupi_order_id", None),
