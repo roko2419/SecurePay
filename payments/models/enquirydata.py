@@ -6,3 +6,6 @@ class EnquiryData(models.Model):
     order_id = models.CharField(max_length=100, null=False, blank=False)
     enquiry_text = models.TextField(null=False, blank=False)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "enquiry_data"

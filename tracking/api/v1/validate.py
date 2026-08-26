@@ -1,3 +1,13 @@
+"""Shipping-label PDF validation endpoint and forgery-risk scoring.
+
+`PDFValidator` is the DRF view: it accepts an uploaded PDF, extracts the
+courier/AWB, links it to the matching shipment/order, and runs it through
+`analyze_shipping_label_pdf` to produce a forensic "is this label real"
+risk score. Everything below the view is pure/stateless analysis code that
+can be reused or unit-tested independently of the HTTP layer.
+"""
+
+import logging
 import os
 import re
 import tempfile
@@ -17,8 +27,13 @@ from tracking.models.trackinginfo import Shipment
 try:
     from pyzbar.pyzbar import decode as zbar_decode
 except Exception:
+    # pyzbar depends on the system zbar library, which may not be installed
+    # in every environment. Barcode decoding is treated as optional rather
+    # than a hard dependency - see _decode_barcodes_from_image().
     zbar_decode = None
-from .pdf_forencics import analyze_pdf
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class RiskResult:
@@ -73,7 +88,37 @@ COURIER_KEYWORDS = {
 }
 
 
+# Colors sampled from a genuine Delhivery label (grey packaging tones +
+# accent red). Used as a fallback courier fingerprint when the label
+# doesn't otherwise identify itself as Delhivery in text - see
+# DELHIVERY_COLOR_MATCH_THRESHOLD below.
+DELHIVERY_FINGERPRINT_COLORS = {
+    "#394058", "#53596e", "#474d64", "#646a7d",
+    "#868b9a", "#767b8c", "#e82223", "#fcdfdf",
+}
+
+# Minimum number of page-color hits against DELHIVERY_FINGERPRINT_COLORS
+# before we're confident enough to label the courier "Delhivery" purely
+# from color, rather than from text/logo detection in validate_label().
+DELHIVERY_COLOR_MATCH_THRESHOLD = 6
+
+
 class PDFValidator(APIView):
+    """POST endpoint: upload a shipping-label PDF for validation.
+
+    Pipeline:
+      1. Save the upload to a temp file and run `validate_label()` to pull
+         out the courier, AWB, and any barcodes it recognizes.
+      2. If the courier couldn't be identified from text/logo, fall back to
+         a color-fingerprint match (currently only tuned for Delhivery).
+      3. Derive the merchant's order id from the label (courier-specific
+         parsing, see `get_order_id`) and link the AWB to a `Shipment`,
+         and that shipment to the matching `OrderInfo`.
+      4. Run `analyze_shipping_label_pdf()` for a forgery/tamper risk score
+         and include it in the response so suspicious labels can be
+         flagged for manual review.
+    """
+
     def post(self, request):
         pdf_file = request.FILES.get("file")
         if not pdf_file:
@@ -84,31 +129,24 @@ class PDFValidator(APIView):
 
         temp_path = None
         try:
+            # Uploaded file is streamed to disk since both the label parser
+            # and the risk analyzer (fitz) need a real file path, not a
+            # Django file-like object.
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_pdf:
                 for chunk in pdf_file.chunks():
                     temp_pdf.write(chunk)
                 temp_path = temp_pdf.name
 
             result = validate_label(temp_path)
+            logger.info("Label validation result: %s", result)
 
-            delhivery_match = 0
-            if not result.delivery_partner:
-                color_result = extract_major_colors_from_pdf(temp_path)
-                for page in color_result.get("all_pages", []):
-                    for color in page.get("colors", []):
-                        if color["hex"].lower() in {
-                            "#394058", "#53596e", "#474d64", "#646a7d",
-                            "#868b9a", "#767b8c", "#e82223", "#fcdfdf"
-                        }:
-                            delhivery_match += 1
-
-            partner = "Unknown"
+            # Courier wasn't identified from text/logo - try a color-based
+            # fallback before giving up and reporting "Unknown".
+            delivery_partner = result.delivery_partner
             self.from_color = False
-            if delhivery_match > 6:
-                partner = "Delhivery"
-                self.from_color = True
+            if not delivery_partner:
+                delivery_partner, self.from_color = self._detect_courier_from_color(temp_path)
 
-            delivery_partner = result.delivery_partner if result.delivery_partner else partner
             order_id = self.get_order_id(delivery_partner, result.raw_text, result.barcodes)
 
             analysis = analyze_shipping_label_pdf(
@@ -116,10 +154,11 @@ class PDFValidator(APIView):
                 expected_courier=delivery_partner,
                 expected_awb=result.awb,
             )
-            print(f"Analysis: {analysis}")
-            pdf_analysis = analyze_pdf(temp_path)
-            # print(f"PDF Forensics Analysis: {pdf_analysis}")
+            logger.info("Risk analysis: %s", analysis)
 
+            # Link the AWB to a Shipment record (creating one if this AWB
+            # hasn't been seen before), then attach that shipment to the
+            # merchant's order if we could resolve one.
             shipment = None
             if result.awb:
                 try:
@@ -137,41 +176,68 @@ class PDFValidator(APIView):
                     order.save()
 
             final_response = {
-                    "delivery_partner": delivery_partner,
-                    "awb": result.awb,
-                    "is_valid": result.is_authentic,
-                    "result": result.to_dict(),
-                    "order_id": order_id,
-                    "risk_analysis": analysis,
-                    "flagged_for_review": analysis.get("verdict") in ("needs_review", "highly_suspicious"),
+                "delivery_partner": delivery_partner,
+                "awb": result.awb,
+                "is_valid": result.is_authentic,
+                "result": result.to_dict(),
+                "order_id": order_id,
+                "risk_analysis": analysis,
+                "flagged_for_review": analysis.get("verdict") in ("needs_review", "highly_suspicious"),
             }
-            print(f"Final Response:", order_id)
 
-            return Response(
-               final_response,
-            )
+            return Response(final_response)
 
         except Exception as exc:
-            print(f"PDF validation failed: {exc}")
+            # Deliberately vague to the client - internal parsing/analysis
+            # failures shouldn't leak stack traces or file details.
+            logger.exception("PDF validation failed: %s", exc)
             return Response({"error": "Unable to process this file."}, status=400)
 
         finally:
             if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
 
-    def get_order_id(self, delivery_partner, raw_text, barcodes):
+    @staticmethod
+    def _detect_courier_from_color(temp_path: str) -> "tuple[str, bool]":
+        """Fallback courier detection via dominant page colors.
+
+        Returns (delivery_partner, matched_by_color). Only recognizes
+        Delhivery today; anything below the match threshold is reported
+        as "Unknown".
+        """
+        color_result = extract_major_colors_from_pdf(temp_path)
+        match_count = sum(
+            1
+            for page in color_result.get("all_pages", [])
+            for color in page.get("colors", [])
+            if color["hex"].lower() in DELHIVERY_FINGERPRINT_COLORS
+        )
+
+        if match_count > DELHIVERY_COLOR_MATCH_THRESHOLD:
+            return "Delhivery", True
+        return "Unknown", False
+
+    def get_order_id(self, delivery_partner: str, raw_text: str, barcodes: List[str]) -> Optional[str]:
+        """Extract the merchant's order id from the label, courier by courier.
+
+        Each courier lays out its order id differently - some only expose it
+        as a secondary barcode, others print it as labeled text - so this is
+        a plain dispatch table rather than one general-purpose pattern.
+        """
         if "Delhivery" in delivery_partner:
-            return barcodes[1] if self.from_color and len(barcodes) > 1 else (barcodes[0] if barcodes else None)
+            # When the courier was identified via color rather than logo/text
+            # (self.from_color), the first barcode tends to be a different
+            # value than usual, so the order id is expected to be the second
+            # barcode instead of the first.
+            if self.from_color and len(barcodes) > 1:
+                return barcodes[1]
+            return barcodes[0] if barcodes else None
 
         elif delivery_partner == "Xpressbees Surface":
             return barcodes[0] if barcodes else None
 
         elif "Blue Dart" in delivery_partner or "Bluedart" in delivery_partner or "bluedart" in delivery_partner.lower():
-            match = re.search(
-                r"\bOrder\s*#?\s*:\s*(\d+)",
-                raw_text,
-                re.IGNORECASE
-            )
+            match = re.search(r"\bOrder\s*#?\s*:\s*(\d+)", raw_text, re.IGNORECASE)
             if match:
                 return match.group(1)
 
@@ -743,6 +809,18 @@ def analyze_shipping_label_pdf(
     expected_courier: Optional[str] = None,
     expected_awb: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """Run all forgery-risk checks on a shipping-label PDF and return a RiskResult dict.
+
+    Combines several independent, additive signals (metadata, disclaimer
+    language, AWB/barcode consistency, page structure, font/glyph
+    consistency, and revision history - see the `_score_*` helpers above)
+    into one score, then buckets it into a verdict:
+        score >= 70  -> "highly_suspicious"
+        score >= 40  -> "needs_review"
+        otherwise    -> "likely_valid"
+    `expected_courier`/`expected_awb`, when supplied by the caller, are
+    cross-checked against what's actually extracted from the PDF.
+    """
     reasons: List[str] = []
 
     doc = fitz.open(pdf_file_path)
