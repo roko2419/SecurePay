@@ -42,6 +42,7 @@ GET  /payments/v1/shipments/    → ShipmentListView
 ```
 - `CreatePayment` validates the merchant session, converts the rupee amount to paise, and creates a Razorpay order via the SDK using keys hardcoded in `payments/config.py`. If the SDK/keys are unavailable it falls back to a **mock order** that is returned to the client but never persisted to `OrderInfo`. Integrate payment link flow, once merchant sends the create payment, we must send a payment link to merchant. That link will be used by customer to pay. 
 - `VerifyPayment` looks up the order by `pa_order_id`, **marks it `order_status="paid"` and saves before checking the HMAC signature**, then performs the signature check afterward. An additional api for merchant in case they miss our payment update webhook. Merchant can call this api and get the status of payment.
+- Follow api_doc_v1.md for order apis/webhooks.
 
 
 **PhonePe** (`phonepe.py`) — the flow actually used by the merchant "store" checkout (Demo Store) (This flow wont be used in production):
@@ -132,3 +133,5 @@ If the courier can't be identified from text/logo, a color-fingerprint fallback 
 5. Fix the `enquiry_id` race condition.
 6. Add automated tests, starting with the payment verification and enquiry flows.
 7. Check complete merchant flow before moving to production.
+8. Check the communication channel flow, make sure to get getgabs API key, save it and use wherever communication with customer is required.
+9. Merchant Creation on our application might require KYC verification, GST verification. Add the required verification in flow create merchant flow.
