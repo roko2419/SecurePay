@@ -1,3 +1,6 @@
+# K-means color-clustering used by validate.py's Delhivery color-fingerprint
+# fallback (see DELHIVERY_FINGERPRINT_COLORS there) when a label's courier
+# can't be identified from text/logo alone.
 import fitz
 import numpy as np
 from PIL import Image
@@ -114,6 +117,13 @@ def extract_major_colors_from_pdf(
     }
 
 
+# WARNING: this is a module-level script, not guarded by `if __name__ ==
+# "__main__"`. It runs — against a hardcoded local file path — every single
+# time this module is imported, which happens on every Django startup via
+# validate.py's `from .color_parser import extract_major_colors_from_pdf`.
+# That's the source of the "Page 1: {'rgb': ...}" noise printed on every
+# `manage.py` invocation. Left as-is (not asked to fix), but worth knowing
+# this isn't intentional logging — it's leftover ad-hoc test code.
 result = extract_major_colors_from_pdf("/home/rishabh/Desktop/SecurePayD/securepay/Shipping Label.pdf", colors_per_page=6)
 
 for page in result["all_pages"]:

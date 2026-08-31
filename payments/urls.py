@@ -1,4 +1,7 @@
 # payments/urls.py
+# Mounted at /payments/ in securepay/urls.py. Merchant-facing endpoints below
+# (create_payment/verify_payment/shipments) are authenticated with a merchant
+# session token (see payments.auth), not Django's session/user auth.
 from django.urls import path
 from payments.api.v1.generate_order import GenerateOrder, VerifyPayment, CreatePayment, ShipmentListView
 from payments.api.v1.phonepe import PhonePeCallbackView, PhonePeInitiateView, PhonePeReturnView

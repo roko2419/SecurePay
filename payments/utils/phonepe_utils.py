@@ -1,4 +1,8 @@
 # payments/phonepe_utils.py
+# Helpers for PhonePe's older (v1/checksum-based) signing scheme. The current
+# PhonePeInitiateView/PhonePeCallbackView flow in phonepe.py uses OAuth
+# bearer tokens instead, so these aren't currently called from that path —
+# kept in case a legacy checksum endpoint is reintroduced.
 import base64
 import hashlib
 import hmac

@@ -1,3 +1,13 @@
+# Razorpay checkout flow: create an order, then verify the payment signature.
+#
+# NOTE: this file defines CreatePayment and VerifyPayment twice — a DRF
+# APIView pair up top (GenerateOrder/VerifyPayment), and a plain Django View
+# pair further down (also named CreatePayment/VerifyPayment). Because both
+# live at module scope, the later definitions silently replace the earlier
+# ones; payments/urls.py imports CreatePayment/VerifyPayment from here and
+# gets the *second* (View-based) versions. GenerateOrder itself is unused/
+# unrouted. Left as-is since untangling it is a behavior change, not a
+# comment — flagging it here so it's not mistaken for dead code.
 from django.utils import timezone
 import os
 
@@ -16,6 +26,10 @@ client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
 
 
 def _get_auth_token_from_request(request, payload=None):
+    """Pull the merchant session token from the Authorization header, the
+    parsed JSON payload, request.data, or a query param — whichever the
+    caller used. Lets both DRF (request.data) and plain-Django (raw payload)
+    views in this file share one lookup."""
     auth_header = request.headers.get("Authorization", "")
     if auth_header.lower().startswith("bearer "):
         return auth_header.split(" ", 1)[1].strip()
@@ -30,6 +44,7 @@ def _get_auth_token_from_request(request, payload=None):
     return request.GET.get("auth_token")
 
 class GenerateOrder(APIView):
+    """Not wired up in urls.py — superseded by the CreatePayment View below."""
 
     def post(self, request):
         self.auth_token = _get_auth_token_from_request(request)
@@ -84,6 +99,9 @@ class GenerateOrder(APIView):
 
 
 class VerifyPayment(APIView):
+    """Placeholder — shadowed by the View-based VerifyPayment defined later
+    in this file (see the module-level note above); not actually reachable."""
+
     def post(self, request):
         print("Request data:", request.data)
         return Response(request.data)
@@ -107,7 +125,8 @@ try:
 except Exception:
     RZP_AVAILABLE = False
 
-# Example: Create Payment endpoint — returns JSON consumed by frontend
+# This is the CreatePayment actually routed by payments/urls.py (see note
+# at the top of the file about the duplicate class names above).
 @method_decorator(csrf_exempt, name='dispatch')  # for demo: allow POST from browser without CSRF token
 class CreatePayment(View):
     def post(self, request, *args, **kwargs):
@@ -218,6 +237,7 @@ class CreatePayment(View):
 
 
 
+# This is the VerifyPayment actually routed by payments/urls.py.
 @method_decorator(csrf_exempt, name='dispatch')
 class VerifyPayment(View):
     def post(self, request, *args, **kwargs):
@@ -230,6 +250,32 @@ class VerifyPayment(View):
         }
         Verifies signature using RAZORPAY_KEY_SECRET (HMAC SHA256 of order_id|payment_id)
         On success: mark internal order/payment as paid, return success JSON.
+
+        *** SECURITY BUG — READ BEFORE RELYING ON THIS ENDPOINT ***
+        The docstring above describes the INTENDED behavior, but the code
+        below does not actually match it: `order_info.order_status = "paid"`
+        and `.save()` happen BEFORE the signature is checked (see the
+        `hmac.compare_digest` call much further down). That means:
+          - Any POST with a valid-looking existing razorpay_order_id gets the
+            matching order marked "paid" in the database immediately —
+            regardless of whether payment_id/signature are present, correct,
+            or even supplied at all.
+          - The signature check that follows only affects the HTTP RESPONSE
+            ("signature mismatch" vs. success) — it does NOT undo the
+            order_status="paid" write that already happened.
+          - This means a caller who knows (or brute-forces/guesses) a
+            razorpay_order_id can mark that order as paid without ever
+            proving they made a real payment, simply by POSTing here with a
+            wrong/missing signature. That's the exact scenario payment
+            signature verification exists to prevent.
+        This is a payments-integrity bug, not just a style issue. The fix
+        (not applied here, since it's a behavior change beyond "add
+        comments") would be moving the `order_info.order_status = "paid"` /
+        `.save()` lines to AFTER the `hmac.compare_digest(...)` check
+        succeeds, so a failed/forged verification leaves the order
+        untouched. Flagging prominently because unlike the other issues
+        noted in this codebase, this one directly affects whether money
+        changes hands correctly.
         """
         try:
             payload = json.loads(request.body.decode('utf-8'))
@@ -243,12 +289,18 @@ class VerifyPayment(View):
         order_info = OrderInfo.objects.filter(pa_order_id=order_id).first()
         if not order_info:
             return HttpResponseBadRequest("invalid razorpay_order_id")
+        # BUG (see docstring above): this write happens unconditionally,
+        # before the signature below is ever checked.
         order_info.pa_payment_id = payment_id
         order_info.order_status = "paid"
         order_info.save()
         if not (order_id and payment_id and signature):
             return HttpResponseBadRequest("missing parameters")
 
+        # This IS the correct, secure way to check a Razorpay signature
+        # (HMAC-SHA256 of "order_id|payment_id" keyed on the secret, compared
+        # with the constant-time hmac.compare_digest) — the problem is only
+        # that it runs too late to gate the DB write above.
         msg = f"{order_id}|{payment_id}".encode()
         expected_sig = hmac.new(RAZORPAY_KEY_SECRET.encode(), msg, hashlib.sha256).hexdigest()
         if not hmac.compare_digest(expected_sig, signature):
@@ -256,6 +308,10 @@ class VerifyPayment(View):
         return JsonResponse({"ok": True, "message": "payment verified and processed", "razorpay_order_id": order_id, "razorpay_payment_id": payment_id})
     
 class ShipmentListView(View):
+    """Merchant-scoped order/shipment list — the merchant-facing counterpart
+    to adminpanel.AdminOrderListView, but filtered to the logged-in merchant
+    only rather than showing every merchant's orders."""
+
     def get(self, request, *args, **kwargs):
         """
         Example endpoint to list shipments.

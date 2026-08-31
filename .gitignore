@@ -1,1 +1,5 @@
 /payments/config.py
+__pycache__/
+*.pyc
+*.cpython-*.pyc
+payments/migrations/

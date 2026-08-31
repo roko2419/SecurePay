@@ -1,3 +1,6 @@
+# A registered merchant account. merchant_key/merchant_salt are used to sign
+# hosted-checkout requests (see payments.auth.verify_merchant_auth_token);
+# password is a sha512 hex digest, not a Django hasher (see merchant.v1.create_merchant).
 from django.db import models
 
 class MerchantInfo(models.Model):

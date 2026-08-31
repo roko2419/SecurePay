@@ -1,3 +1,6 @@
+# A shopper who has placed at least one order. Looked up/created by phone
+# number in GenerateOrder.generate_order() — customer_phone is unique so the
+# same customer across multiple merchants/orders reuses one row.
 from django.db import models
 
 class CustomerInfo(models.Model):

@@ -1,3 +1,9 @@
+# The central order record. Created by GenerateOrder/CreatePayment before the
+# payment aggregator order exists, then updated with the aggregator's id and
+# status once it responds. merchant_order_id is the merchant's own reference;
+# pa_order_id/pa_payment_id (and the phonepe_* mirror fields below) are the
+# payment aggregator's ids — note EnquiryData.order_id is matched against
+# pa_order_id in the admin panel, not merchant_order_id (see adminpanel).
 from django.db import models
 
 class OrderInfo(models.Model):

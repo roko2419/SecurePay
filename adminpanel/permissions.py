@@ -8,7 +8,14 @@ User = get_user_model()
 
 
 class AdminAPIView(APIView):
-    """Base view requiring a valid admin (staff/superuser) session token."""
+    """Base view requiring a valid admin (staff/superuser) session token.
+
+    Subclasses just implement get/post/patch/etc. as normal; `initial()` runs
+    before the handler on every request and stashes the resolved user on
+    `request.admin_user` for handlers to use (e.g. to stamp "resolved_by").
+    Raising AuthenticationFailed here lets DRF turn it into a clean 401/403
+    response automatically, without each view needing its own auth checks.
+    """
 
     def initial(self, request, *args, **kwargs):
         super().initial(request, *args, **kwargs)
@@ -22,6 +29,8 @@ class AdminAPIView(APIView):
         except User.DoesNotExist:
             raise AuthenticationFailed("Invalid or expired admin session")
 
+        # Belt-and-suspenders: even if a stale session token somehow points at
+        # a user who lost staff/superuser status, don't let them in.
         if not (user.is_staff or user.is_superuser):
             raise AuthenticationFailed("Invalid or expired admin session")
 

@@ -1,3 +1,12 @@
+"""Cross-merchant read views for the admin panel: every order and every
+enquiry in the system, regardless of which merchant they belong to.
+
+The merchant-facing views (payments.api.v1.generate_order.ShipmentListView)
+scope everything to the logged-in merchant's own orders; these views
+deliberately don't, since the whole point of the admin panel is to see
+across merchants.
+"""
+
 from django.conf import settings
 from django.db.models import Q
 
@@ -9,7 +18,11 @@ from payments.models.enquirydata import EnquiryData, EnquiryNote
 
 
 class AdminOrderListView(AdminAPIView):
+    """Paginated, searchable list of every order across all merchants."""
+
     def get(self, request):
+        # limit/page/q all come from query params and are best-effort parsed —
+        # bad input just falls back to sane defaults rather than erroring.
         try:
             limit = min(int(request.GET.get("limit", 25)), 200)
         except ValueError:
@@ -31,6 +44,8 @@ class AdminOrderListView(AdminAPIView):
         if status_filter:
             qs = qs.filter(order_status__iexact=status_filter)
 
+        # .values(...) flattens related fields (merchant__merchant_name, etc.)
+        # straight into dicts the frontend can render without extra joins.
         rows = qs.values(
             "id",
             "merchant_order_id",
@@ -56,6 +71,9 @@ class AdminOrderListView(AdminAPIView):
             "enquiry__status",
         )
 
+        # Free-text search is done in Python rather than the DB because it
+        # spans multiple unrelated columns (order id, customer, merchant) —
+        # simplest thing that works at this data volume.
         if q:
             rows = [
                 r
@@ -91,6 +109,10 @@ class AdminOrderListView(AdminAPIView):
 
 
 class AdminEnquiryListView(AdminAPIView):
+    """Paginated, searchable list of every customer enquiry, enriched with
+    the order/customer/shipment/notes/resolution context an admin needs to
+    act on it without opening several other screens."""
+
     def get(self, request):
         try:
             limit = min(int(request.GET.get("limit", 25)), 200)
@@ -129,6 +151,10 @@ class AdminEnquiryListView(AdminAPIView):
             )
         )
 
+        # NOTE: EnquiryData.order_id is a free-text field the enquiry form
+        # captures from the customer — in practice it holds the payment
+        # aggregator's order id (pa_order_id), not our merchant_order_id.
+        # We match against both so enquiries resolve to an order either way.
         order_ids = [e["order_id"] for e in enquiries if e["order_id"]]
         matched_orders = list(
             OrderInfo.objects.filter(
@@ -150,12 +176,17 @@ class AdminEnquiryListView(AdminAPIView):
                 "shipment_id__status",
             )
         )
+        # Index by both id styles so the lookup below is a single dict hit
+        # regardless of which one a given enquiry happens to reference.
         orders_by_order_id = {}
         for o in matched_orders:
             if o["pa_order_id"]:
                 orders_by_order_id[o["pa_order_id"]] = o
             orders_by_order_id[o["merchant_order_id"]] = o
 
+        # Pull just enough from EnquiryNote to show a preview + count in the
+        # list view; the full note history is fetched separately per-enquiry
+        # when the admin opens the notes modal (AdminEnquiryNoteListView).
         enquiry_ids = [e["id"] for e in enquiries]
         notes_count_by_enquiry = {}
         latest_note_by_enquiry = {}
@@ -174,6 +205,7 @@ class AdminEnquiryListView(AdminAPIView):
                 }
 
         for e in enquiries:
+            # Swap the raw stored file path for a browser-openable absolute URL.
             evidence_path = e.pop("evidence_file", None)
             if evidence_path:
                 e["evidence_url"] = request.build_absolute_uri(f"{settings.MEDIA_URL}{evidence_path}")

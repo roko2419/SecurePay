@@ -1,3 +1,7 @@
+# Merchant-scoped enquiry list (the merchant sees only their own customers'
+# enquiries) — the counterpart to adminpanel.AdminEnquiryListView, which
+# shows every merchant's enquiries. Confirms EnquiryData.order_id is matched
+# against OrderInfo.pa_order_id, not merchant_order_id.
 from django.http import JsonResponse
 from django.views import View
 
@@ -35,6 +39,14 @@ class EnquiryListView(View):
             page = 1
         q = (request.GET.get("q") or "").strip().lower()
 
+        # The scoping step: find every pa_order_id that belongs to THIS
+        # merchant, then only pull enquiries whose order_id matches one of
+        # those. This is what makes the endpoint merchant-scoped — an
+        # enquiry whose order_id belongs to a different merchant's order
+        # never appears here, no matter what q/page/limit are passed.
+        # (pa_order_id can be None for an order that hasn't reached the
+        # payment aggregator yet — that's harmless here since no real
+        # EnquiryData.order_id would ever equal None.)
         merchant_order_ids = set(
             OrderInfo.objects.filter(merchant_id=token_merchant_id).values_list("pa_order_id", flat=True)
         )
@@ -44,6 +56,10 @@ class EnquiryListView(View):
             for order in OrderInfo.objects.filter(pa_order_id__in=merchant_order_ids).select_related("customer_info")
         }
 
+        # NOTE: an order_id can legitimately map to MULTIPLE EnquiryData rows
+        # (see the "nothing stops duplicate submissions" note in
+        # tracking.api.v1.enquiry.SubmitEnquiry) — every matching row is
+        # returned here, not just the latest one per order.
         enquiries = EnquiryData.objects.filter(order_id__in=merchant_order_ids).order_by("-created_at")
 
         rows = []

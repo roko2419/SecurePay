@@ -1,3 +1,21 @@
+# Public endpoint (no login) that a customer hits from the signed enquiry
+# link (see tracking.signing.build_enquiry_link) to report a delivery
+# problem. Feeds adminpanel's Enquiries dashboard on the other end.
+#
+# REQUEST FORMAT: must be multipart/form-data, not JSON — evidence_file is
+# read from request.FILES, which only gets populated for multipart uploads.
+# The frontend's api/enquiry.js (securepay-client) builds this with a
+# FormData object for exactly this reason.
+#
+# NOTHING STOPS DUPLICATE SUBMISSIONS FOR THE SAME ORDER: there's no check
+# here for "does an EnquiryData row already exist for this order_id" — the
+# signed link can be submitted against multiple times (a customer resubmitting
+# after being told to add more detail, retrying after what looked like a
+# failed submit, etc.), and each submission creates its own separate
+# EnquiryData row, all sharing the same order_id. This is why a single order
+# can show up with several ENQxx rows in the admin panel's Enquiries list —
+# that's expected, not a bug, but worth knowing so you don't assume order_id
+# is unique on EnquiryData (it explicitly isn't — only enquiry_id is).
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -9,6 +27,14 @@ VALID_RECEIPT_STATUSES = {choice for choice, _ in EnquiryData.RECEIPT_STATUS_CHO
 
 
 def _parse_bool(value):
+    """Form data arrives as strings ("true"/"false"/"1"/"0"/etc.), not real
+    booleans, so this normalizes to Python True/False/None. Returns None
+    (not False) for a genuinely missing/blank field — these model fields
+    (someone_else_received, agent_contacted, ...) are nullable specifically
+    because not every enquiry step applies to every receipt_status branch of
+    the customer-facing wizard (see securepay-client's Enquiry.jsx), so
+    "not asked" (None) needs to stay distinguishable from "asked and
+    answered no" (False)."""
     if value is None or value == '':
         return None
     if isinstance(value, bool):
@@ -32,6 +58,10 @@ class SubmitEnquiry(APIView):
         if receipt_status not in VALID_RECEIPT_STATUSES:
             return Response({"error": "Invalid receipt_status."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # NOTE: count()+1 for the id is racy under concurrent submissions and
+        # can collide/reuse a number if an earlier enquiry was ever deleted
+        # (enquiry_id is unique=True, so a collision here would 500 instead
+        # of silently overwriting).
         enquiry = EnquiryData.objects.create(
             enquiry_id=f"ENQ{EnquiryData.objects.count() + 1}",
             order_id=order_id,

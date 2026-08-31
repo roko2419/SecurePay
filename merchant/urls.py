@@ -1,4 +1,11 @@
 # merchant/urls.py
+# Mounted at /merchants/ in securepay/urls.py. Two kinds of routes: static
+# HTML pages (server-rendered checkout/tracking/dashboard demo pages served
+# straight from merchant/static/) and the merchant account API
+# (create_merchant/login, in v1/create_merchant.py).
+#
+# NOTE: GenerateOrder/VerifyPayment/CreatePayment are imported here but never
+# referenced below — looks like leftover from an earlier version of this file.
 from django.urls import path
 from django.views.generic import TemplateView
 from payments.api.v1.generate_order import GenerateOrder, VerifyPayment, CreatePayment

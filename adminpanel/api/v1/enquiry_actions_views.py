@@ -1,3 +1,21 @@
+"""Admin actions taken on an enquiry: leaving notes, and recording where the
+disputed money ultimately went (refunded to the customer vs. paid out to the
+merchant) along with why. Kept separate from orders_views.py since these are
+writes/mutations rather than read-only listings.
+
+*** IMPORTANT: AdminEnquiryResolutionView is a RECORD, not an ACTION ***
+Setting resolution_status to "money_refunded" or "money_to_merchant" only
+writes that decision into the EnquiryData row (resolution_status,
+resolution_reason, resolved_by, resolved_at) — it does NOT call Razorpay's
+refund API, does NOT trigger any actual payout to the merchant, and does NOT
+move money anywhere. It's purely an audit trail of "an admin decided X, for
+reason Y, at time Z" — someone still has to go actually issue the refund (via
+the Razorpay dashboard/API) or release the payout separately. If a new
+developer is asked to "make the refund button actually refund the customer",
+that integration doesn't exist yet and would need to be added — this view
+just records the decision.
+"""
+
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
@@ -10,6 +28,7 @@ VALID_RESOLUTION_STATUSES = {choice[0] for choice in EnquiryData.RESOLUTION_STAT
 
 
 def _serialize_note(note):
+    """Shared JSON shape for a note, used by both the list and detail views."""
     return {
         "id": note.id,
         "note": note.note,
@@ -61,7 +80,9 @@ class AdminEnquiryNoteDetailView(AdminAPIView):
 
 
 class AdminEnquiryResolutionView(AdminAPIView):
-    """PATCH: set the money-movement resolution for an enquiry, with a reason."""
+    """PATCH: record the money-movement decision for an enquiry, with a
+    reason. See the DOES-NOT-MOVE-MONEY warning in this file's module
+    docstring above before assuming this triggers a real refund/payout."""
 
     def patch(self, request, enquiry_id):
         enquiry = get_object_or_404(EnquiryData, id=enquiry_id)
@@ -75,6 +96,8 @@ class AdminEnquiryResolutionView(AdminAPIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # Moving money either direction must be justified; "unresolved" (e.g.
+        # reverting a mistaken action) doesn't need one.
         if resolution_status != "unresolved" and not reason:
             return Response({"error": "reason is required for this status."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -83,6 +106,14 @@ class AdminEnquiryResolutionView(AdminAPIView):
         enquiry.resolved_by = request.admin_user
         enquiry.resolved_at = timezone.now()
 
+        # Recording a real resolution also closes out the enquiry itself.
+        # NOTE the asymmetry: there's no corresponding `else` branch that
+        # reverts enquiry.status back to "pending"/"reviewed" if an admin
+        # later changes resolution_status back to "unresolved" (e.g. to undo
+        # a mistaken click) — enquiry.status stays "resolved" from whatever
+        # it was last set to. If "undo a resolution" needs to fully reopen
+        # the enquiry in the Enquiries list's status filter too, that'd need
+        # handling here explicitly.
         if resolution_status != "unresolved":
             enquiry.status = "resolved"
 

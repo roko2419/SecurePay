@@ -1,3 +1,6 @@
+# A customer-submitted "I didn't get my order" (or similar) complaint,
+# captured by tracking.api.v1.enquiry, plus everything the admin panel
+# (adminpanel app) needs to investigate and resolve it.
 from django.conf import settings
 from django.db import models
 
@@ -17,7 +20,7 @@ class EnquiryData(models.Model):
 
     id = models.AutoField(primary_key=True)
     enquiry_id = models.CharField(max_length=100, null=False, blank=False, unique=True)
-    order_id = models.CharField(max_length=100, null=False, blank=False)
+    order_id = models.CharField(max_length=100, null=False, blank=False)  # in practice this holds OrderInfo.pa_order_id
     enquiry_text = models.TextField(null=False, blank=False)
     receipt_status = models.CharField(max_length=20, choices=RECEIPT_STATUS_CHOICES, null=False)
     someone_else_received = models.BooleanField(null=True, blank=True)

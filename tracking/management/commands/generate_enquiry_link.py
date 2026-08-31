@@ -1,3 +1,6 @@
+# Dev/ops helper: `python manage.py generate_enquiry_link <order_id>` — for
+# manually re-sending or testing the same link tracking.track_shipments's
+# notify_customer_delivered() sends automatically on delivery.
 from django.core.management.base import BaseCommand, CommandError
 
 from tracking.signing import build_enquiry_link

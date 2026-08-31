@@ -1,3 +1,24 @@
+# Merchant account signup + login — the only place either happens.
+#
+# Signup (CreateMerchant) generates merchant_key/merchant_salt, the two
+# secrets used for the *signed-token* auth path (see payments.auth's big
+# module comment, path B) — e.g. for hosted-checkout links a merchant
+# generates offline without a live session. They're returned ONCE, in the
+# signup response, and never again — MerchantInfo doesn't expose them
+# through any other endpoint. If a merchant loses them, the only fix given
+# the current code is generating a brand-new merchant row (there's no
+# "regenerate my key" endpoint). Worth keeping in mind if support ever gets
+# a "lost our merchant key" request.
+#
+# Login (LoginMerchant) issues a Redis session token using the exact same
+# scheme as payments.auth (same TOKEN_TTL_SECONDS import, same
+# "merchant_{id}:{token}" Redis key format, same "<merchant_id>-<token>"
+# combined token shape) — so a token issued here is immediately valid
+# anywhere payments.auth.get_merchant_id_from_token() is checked. This file
+# duplicates that Redis-writing logic directly (setex(...)) rather than
+# calling a shared "create session" helper in payments.auth — if you ever
+# change the session format, this file and payments.auth both need updating
+# together, by hand.
 import secrets
 from hashlib import sha512
 from django.db import IntegrityError, transaction
@@ -10,6 +31,11 @@ from payments.auth import TOKEN_TTL_SECONDS
 
 
 class CreateMerchant(APIView):
+    """NOTE: passes username=merchant_username, but MerchantInfo.username was
+    removed by migration 0011 (it's commented out in the model now) — this
+    call will raise a TypeError as written. Flagging rather than fixing since
+    that's a behavior change, not a comment."""
+
     def post(self, request):
         merchant_name = request.data.get("merchant_name")
         merchant_email = request.data.get("merchant_email")
@@ -21,6 +47,12 @@ class CreateMerchant(APIView):
         if not all([merchant_name, merchant_email, merchant_phone, merchant_address, merchant_username, merchant_password]):
             return Response({"error": "All fields are required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        # merchant_key/merchant_salt are each random 8-hex-char strings
+        # (generate_key/generate_salt below) and both columns are
+        # unique=True on the model — an astronomically rare collision is
+        # still technically possible, so this retries up to 10 times with a
+        # freshly-generated key/salt pair rather than failing outright on
+        # the first collision.
         for _ in range(10):
             try:
                 with transaction.atomic():
@@ -58,6 +90,10 @@ class CreateMerchant(APIView):
 
 
 class LoginMerchant(APIView):
+    """Issues a session token good for TOKEN_TTL_SECONDS, returned both in the
+    JSON body (for API/JS clients) and as a cookie (for the server-rendered
+    static pages in merchant/static/)."""
+
     def post(self, request):
         merchant_email = request.data.get("merchant_email")
         password = request.data.get("password")
@@ -73,10 +109,19 @@ class LoginMerchant(APIView):
         except MerchantInfo.DoesNotExist:
             return Response({"error": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
 
+        # NOTE: plain `!=` rather than a constant-time comparison
+        # (secrets.compare_digest) — a theoretical timing-attack surface on
+        # the password hash, though in practice the network round-trip time
+        # for this HTTP request dwarfs any measurable timing difference.
+        # payments.auth.verify_merchant_auth_token does use compare_digest
+        # for its signature check, for contrast.
         hashed_password = sha512(password.encode()).hexdigest()
         if merchant.password != hashed_password:
             return Response({"error": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
 
+        # Session creation: same Redis key shape
+        # ("merchant_{id}:{token}" -> merchant id, TTL = TOKEN_TTL_SECONDS)
+        # that payments.auth._verify_session_token_and_refresh reads back.
         session_token = secrets.token_urlsafe(32)
         combined_token = f"{merchant.id}-{session_token}"
 

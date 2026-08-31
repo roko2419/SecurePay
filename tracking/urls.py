@@ -1,4 +1,7 @@
-# payments/urls.py
+# tracking/urls.py
+# Mounted at /tracking/ in securepay/urls.py. Covers shipment creation/status
+# (ShipSagar courier integration), the shipping-label PDF validator, and the
+# customer-facing non-delivery enquiry form + its merchant-facing list.
 from django.urls import path
 from tracking.api.v1.track_shipments import CreateShipment, UpdateShipment, CreateBulkShipment, TrackShipmentShipsagar
 from tracking.api.v1.validate import PDFValidator

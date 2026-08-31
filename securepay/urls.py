@@ -31,6 +31,11 @@ schema_view = get_schema_view(
     permission_classes=[AllowAny],
 )
 
+# Top-level routing: /admin/ is Django's own built-in admin site (separate
+# from — and unrelated to — the custom /adminpanel/ API this project's
+# React admin app talks to; /merchants/ is the merchant-facing API + demo
+# pages; /payments/ and /tracking/ are called by both merchant and admin
+# frontends.
 urlpatterns = [
     path('admin/', admin.site.urls),
     path("", TemplateView.as_view(template_name="payments/static/index.html"), name="home"),
