@@ -96,11 +96,16 @@ DELHIVERY_FINGERPRINT_COLORS = {
     "#394058", "#53596e", "#474d64", "#646a7d",
     "#868b9a", "#767b8c", "#e82223", "#fcdfdf",
 }
+SHIPROCKET_FINGERPRINT_COLORS = {
+    '#a09df3', '#807cef', '#908df1', '#c1c0f6', 
+    '#d1d0f8', '#e2e1fa', '#6f6bed'
+}
 
 # Minimum number of page-color hits against DELHIVERY_FINGERPRINT_COLORS
 # before we're confident enough to label the courier "Delhivery" purely
 # from color, rather than from text/logo detection in validate_label().
 DELHIVERY_COLOR_MATCH_THRESHOLD = 6
+SHIPROCKET_COLOR_MATCH_THRESHOLD = 6
 
 
 class PDFValidator(APIView):
@@ -147,6 +152,8 @@ class PDFValidator(APIView):
             if not delivery_partner:
                 delivery_partner, self.from_color = self._detect_courier_from_color(temp_path)
 
+            courier_partner, _ = self.detect_courier_partner_from_color(temp_path, result.raw_text)
+            # print(result.raw_text)
             order_id = self.get_order_id(delivery_partner, result.raw_text, result.barcodes)
 
             analysis = analyze_shipping_label_pdf(
@@ -167,6 +174,7 @@ class PDFValidator(APIView):
                     shipment = Shipment(awb=result.awb, courier=delivery_partner)
 
                 shipment.courier = delivery_partner
+                shipment.courier_partner = courier_partner
                 shipment.save()
 
             if order_id and shipment:
@@ -177,6 +185,7 @@ class PDFValidator(APIView):
 
             final_response = {
                 "delivery_partner": delivery_partner,
+                'courier_partner': courier_partner,
                 "awb": result.awb,
                 "is_valid": result.is_authentic,
                 "result": result.to_dict(),
@@ -196,6 +205,28 @@ class PDFValidator(APIView):
         finally:
             if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
+
+    @staticmethod
+    def detect_courier_partner_from_color(temp_path: str, raw_text) -> "tuple[str, bool]":
+        """Fallback courier detection via dominant page colors.
+
+        Returns (delivery_partner, matched_by_color). Only recognizes
+        Delhivery today; anything below the match threshold is reported
+        as "Unknown".
+        """
+        if 'powered by:' in raw_text.lower():
+            return "Shiprocket", True
+        color_result = extract_major_colors_from_pdf(temp_path)
+        match_count = sum(
+            1
+            for page in color_result.get("all_pages", [])
+            for color in page.get("colors", [])
+            if color["hex"].lower() in SHIPROCKET_FINGERPRINT_COLORS
+        )
+        print(match_count,color_result)
+        if match_count > SHIPROCKET_COLOR_MATCH_THRESHOLD:
+            return "Shiprocket", True
+        return "Unknown", False
 
     @staticmethod
     def _detect_courier_from_color(temp_path: str) -> "tuple[str, bool]":

@@ -124,13 +124,13 @@ def extract_major_colors_from_pdf(
 # That's the source of the "Page 1: {'rgb': ...}" noise printed on every
 # `manage.py` invocation. Left as-is (not asked to fix), but worth knowing
 # this isn't intentional logging — it's leftover ad-hoc test code.
-result = extract_major_colors_from_pdf("/home/rishabh/Desktop/SecurePayD/securepay/Shipping Label.pdf", colors_per_page=6)
+# result = extract_major_colors_from_pdf("/home/rishabh/Desktop/SecurePayD/securepay/bluedart-2.pdf", colors_per_page=6)
 
-for page in result["all_pages"]:
-    print(f"Page {page['page']}:")
-    for color in page["colors"]:
-        print(color)
+# for page in result["all_pages"]:
+#     print(f"Page {page['page']}:")
+#     for color in page["colors"]:
+#         print(color)
 
-print("\nCombined major colors:")
-for color in result["combined_major_colors"]:
-    print(color)
+# print("\nCombined major colors:")
+# for color in result["combined_major_colors"]:
+#     print(color)

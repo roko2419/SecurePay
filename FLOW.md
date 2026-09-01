@@ -130,7 +130,7 @@ If the courier can't be identified from text/logo, a color-fingerprint fallback 
 2. Add merchant-token auth to `CreateShipment`, `CreateBulkShipment`, `TrackShipmentShipsagar`, `PDFValidator`.
 3. Rotate and move all hardcoded secrets to environment variables; remove the unused `OPENAI_API_KEY`/`HUGGINGFACE_API_KEY`.
 4. Decide whether `GenerateOrder` should be wired up or deleted.
-5. Fix the `enquiry_id` race condition.
+5. PDF validation scores, reject pdfs on basis of analysis and store each pdf info in DB.
 6. Add automated tests, starting with the payment verification and enquiry flows.
 7. Check complete merchant flow before moving to production.
 8. Check the communication channel flow, make sure to get getgabs API key, save it and use wherever communication with customer is required.

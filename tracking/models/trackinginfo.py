@@ -26,6 +26,7 @@ def gen_awb():
 class Shipment(models.Model):
     awb = models.CharField(max_length=64, unique=True, default=gen_awb)
     courier = models.CharField(max_length=128, blank=True, null=True)
+    courier_partner = models.CharField(max_length=128, blank=True, null=True)
     pa_order_id = models.CharField(max_length=128, blank=True, null=True)
     invoice = models.CharField(max_length=128, blank=True, null=True)
     status = models.CharField(max_length=32, choices=STATUS_CHOICES, default="CREATED")

@@ -26,7 +26,7 @@ _KNOWN_CARRIERS = [
     "Blue Dart", "Bluedart", "Delhivery", "Xpressbees", "Ekart", "DTDC",
     "Shadowfax", "Ecom Express", "Ekart Logistics", "India Post", "Gati",
     "Trackon", "Aramex", "FedEx", "Smartr", "Amazon Shipping", "Amazon",
-    "Wow Express", "Professional Couriers", "Shiprocket",
+    "Wow Express", "Professional Couriers",
 ]
 
 # Service tier that often trails the carrier name ("Blue Dart Air").
